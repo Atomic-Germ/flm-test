@@ -1,10 +1,10 @@
-# FLM Test
+# flm-test
 
 A comprehensive testing framework for **[FastFlowLM (FLM)](https://fastflowlm.com)** that validates the functionality of various AI model categories including Language, Embedding, Audio, and Vision models.
 
 ## Overview
 
-FLM_test is designed to thoroughly test FastFlowLM's API compatibility and model functionality across multiple modalities:
+flm-test is designed to thoroughly test FastFlowLM's API compatibility and model functionality across multiple modalities:
 
 - **LLM Tests**: Language model inference with both streaming and non-streaming modes
 - **Embedding Tests**: Text embedding model validation
@@ -20,50 +20,19 @@ Each test suite automatically:
 
 ## Prerequisites
 
-- **Python 3.8 or higher**
 - **FastFlowLM server** running locally or remotely
-- **pip** (Python package manager)
+- **`uv` or `pip`** (Python package manager)
 
 ## Quick Start
 
-### 1. Clone the project
+### 1. Install the package
 
 ```bash
-git clone https://github.com/ZaneNi/FLM_test.git
-cd FLM_test
+uv tool install git+https://github.com/Atomic-Germ/flm-test
 ```
-
-### 2. Setup (Linux/Mac or Windows)
-
-**For Linux/Mac:**
 ```bash
-source ./setup.sh
+pip install git+https://github.com/Atomic-Germ/flm-test
 ```
-
-**For Windows (PowerShell):**
-```powershell
-.\setup.ps1
-```
-
-
-### 3. Configure the Server URL
-
-Edit `backend.json` to point to your FLM server:
-
-```json
-{
-    "base_url": "http://127.0.0.1:52625/v1"
-}
-```
-
-Default settings:
-- **Host:** 127.0.0.1 (localhost)
-- **Port:** 52625
-
-Update to match your FLM server deployment:
-
-- **Local testing:** `http://127.0.0.1:port/v1`
-- **Remote server:** `http://your-server-ip:port/v1`
 
 
 ### 4. Start FLM Server
@@ -73,11 +42,6 @@ Ensure your FastFlowLM server is running before running tests. Start the server 
 **Basic local server:**
 ```bash
 flm serve
-```
-
-**For remote access (accessible from other machines):**
-```bash
-flm serve --host 0.0.0.0
 ```
 
 **Load embedding models (required for embedding tests):**
@@ -90,7 +54,7 @@ flm serve -e 1
 flm serve -a 1
 ```
 
-**Combined flags (for running all tests):**
+**Combined flags (for running "all" tests):**
 ```bash
 flm serve -e 1 -a 1
 ```
@@ -98,32 +62,21 @@ flm serve -e 1 -a 1
 
 ### 5. Run Tests
 
-Activate the virtual environment:
-
-**Linux/Mac:**
-```bash
-source venv/bin/activate
-```
-
-**Windows:**
-```powershell
-.\venv\Scripts\activate.ps1
-```
-
 Run tests with:
 
 ```bash
 # Run all tests
-python main.py --all
+flm-test --all
 
 # Run specific tests
-python main.py --llm                    # LLM tests only
-python main.py --embedding              # Embedding tests only
-python main.py --audio                  # Audio tests only
-python main.py --vision                 # vision tests only
+flm-test --llm                    # LLM tests only
+flm-test --embedding              # Embedding tests only
+flm-test --audio                  # Audio tests only
+flm-test --vision                 # Vision tests only
 
-# Limit token generation
-python main.py --llm --gen-lim 32      # Limit LLM output to 32 tokens
+# Configuration
+flm-test --llm --port 56354       # Set a custom port for LFM
+flm-test --llm --gen-lim 32       # Limit LLM output to 32 tokens
 ```
 
 ## Test Types
@@ -149,31 +102,8 @@ Tests language models with conversation capabilities.
 
 **Output:** `llm_results_v{version}_{timestamp}.csv`
 
-### Embedding Tests
-
-> TODO
-
-**Output:** `embedding_results_v{version}_{timestamp}.csv`
-
-
-
-### Audio Tests
-
-> TODO
-
-**Output:** `audio_results_v{version}_{timestamp}.csv`
-
-
 ### Vision Tests
 Tests Vision-Language Models (VLM) with multi-image analysis.
-
-**Tested Models:**
-- `gemma3:4b`
-- `medgemma:4b`
-- `medgemma1.5:4b`
-- `qwen2.5vl-it:3b`
-- `qwen3vl-it:4b`
-- `translategemma:4b`
 
 **What it tests:**
 - Multi-image understanding

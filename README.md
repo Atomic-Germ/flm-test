@@ -74,6 +74,10 @@ flm-test --embedding              # Embedding tests only
 flm-test --audio                  # Audio tests only
 flm-test --vision                 # Vision tests only
 
+# Target a specific model (instead of all available models)
+flm-test --llm --model gemma3:4b
+flm-test --vision --model gemma3:4b qwen3vl-it:4b   # space-separated list
+
 # Configuration
 flm-test --llm --port 56354       # Set a custom port for LFM
 flm-test --llm --gen-lim 32       # Limit LLM output to 32 tokens

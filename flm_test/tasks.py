@@ -16,12 +16,18 @@ class BaseTestTask(ABC):
     Abstract base class for all testing tasks.
     Enforces a standard interface for running tests and saving results.
     """
-    def __init__(self, base_url, backend_os="linux"):
+    def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.base_url = base_url
         self.client = OpenAI(base_url=base_url, api_key="flm")
         self.version = self._get_flm_version()
         self.models = self._fetch_all_models()
+        if model_filter:
+            filtered = [m for m in self.models if m in model_filter]
+            if not filtered:
+                print(f"Warning: none of the requested model(s) {model_filter} were found in the server's model list. "
+                      f"Available: {self.models}")
+            self.models = filtered
         self.results_dir = os.path.join("results", self.timestamp, backend_os)
         os.makedirs(self.results_dir, exist_ok=True)
 
@@ -80,8 +86,8 @@ class BaseTestTask(ABC):
 
 class LLMTask(BaseTestTask):
 
-    def __init__(self, base_url, backend_os="linux"):
-        super().__init__(base_url, backend_os)
+    def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
+        super().__init__(base_url, backend_os, model_filter=model_filter)
         self.models = [m for m in self.models if m not in ("gpt-oss:20b", "gpt-oss-sg:20b", "qwen3.5:4b", "qwen3.5:9b", "medgemma:4b", "medgemma1.5:4b", "translategemma:4b")]
         self.csv_filename = self.get_csv_filename("llm")
 
@@ -157,13 +163,16 @@ class LLMTask(BaseTestTask):
 
 
 class EmbeddingTask(BaseTestTask):
+    EMBED_MODELS = ["embed-gemma:300m"]
+
+    def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
+        super().__init__(base_url, backend_os, model_filter=model_filter)
+        # Keep only recognised embedding models; honour any user-supplied filter.
+        self.models = [m for m in self.models if m in self.EMBED_MODELS]
+        self.csv_filename = self.get_csv_filename("embedding")
+
     def run(self):
         print("\n=== Starting Embedding Tests ===")
-
-        csv_filename = self.get_csv_filename("embedding")
-
-        all_models = self._fetch_all_models()
-        self.models = [m["model"] for m in all_models.get("models", []) if m["model"] in ["embed-gemma:300m"]]
         print("Testing the following Embedding models:")
         for i, model in enumerate(self.models, 1):
             print(f"  {i}. {model}")
@@ -176,16 +185,19 @@ class EmbeddingTask(BaseTestTask):
         print("\nShutting down flm server...")
         server_process.terminate()
         server_process.wait()
-        print(f"Embedding tests complete. Saved to {csv_filename}")
+        print(f"Embedding tests complete. Saved to {self.csv_filename}")
 
 class AudioTask(BaseTestTask):
+    AUDIO_MODELS = ["whisper-v3:turbo"]
+
+    def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
+        super().__init__(base_url, backend_os, model_filter=model_filter)
+        # Keep only recognised audio models; honour any user-supplied filter.
+        self.models = [m for m in self.models if m in self.AUDIO_MODELS]
+        self.csv_filename = self.get_csv_filename("audio")
+
     def run(self):
         print("\n=== Starting Audio Tests ===")
-
-        csv_filename = self.get_csv_filename("audio")
-
-        all_models = self._fetch_all_models()
-        self.models = [m["model"] for m in all_models.get("models", []) if m["model"] in ["whisper-v3:turbo"]]
         print("Testing the following Audio models:")
         for i, model in enumerate(self.models, 1):
             print(f"  {i}. {model}")
@@ -197,12 +209,12 @@ class AudioTask(BaseTestTask):
         print("\nShutting down flm server...")
         server_process.terminate()
         server_process.wait()
-        print(f"Audio tests complete. Saved to {csv_filename}")
+        print(f"Audio tests complete. Saved to {self.csv_filename}")
 
 class VisionTask(BaseTestTask):
 
-    def __init__(self, base_url, backend_os="linux"):
-        super().__init__(base_url, backend_os)
+    def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
+        super().__init__(base_url, backend_os, model_filter=model_filter)
         self.test_image1_path = "./test_files/image/test_image1.jpeg"
         self.test_image2_path = "./test_files/image/test_image2.jpg"
         self.csv_filename = self.get_csv_filename("vision")

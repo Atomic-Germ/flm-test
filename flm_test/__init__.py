@@ -18,6 +18,9 @@ def main():
     parser.add_argument('--gen-lim', type=int, default=-1, help="Maximum number of tokens to generate")
     parser.add_argument("--port", type=str, default="52625", help="Port your FLM instance is running on.")
     parser.add_argument('--backend-os', type=str, default="linux", choices=["linux", "windows"], help="OS of the FLM backend (default: linux)")
+    parser.add_argument('--model', type=str, nargs='+', metavar='MODEL_ID',
+                        help="Only test the specified model(s). Can be repeated or space-separated. "
+                             "Example: --model gemma3:4b  or  --model gemma3:4b qwen3vl-it:4b")
 
     args = parser.parse_args()
 
@@ -36,17 +39,19 @@ def main():
         endpoint="/v1"
         baseurl=f"{host}:{port}{endpoint}"
 
+        model_filter = args.model  # list[str] | None
+
         if args.llm:
-            LLMTask(baseurl, args.backend_os).run(max_completion_tokens=args.gen_lim)
+            LLMTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim)
 
         if args.embedding:
-            EmbeddingTask(baseurl, args.backend_os).run()
+            EmbeddingTask(baseurl, args.backend_os, model_filter=model_filter).run()
 
         if args.audio:
-            AudioTask(baseurl, args.backend_os).run()
+            AudioTask(baseurl, args.backend_os, model_filter=model_filter).run()
 
         if args.vision:
-            VisionTask(baseurl, args.backend_os).run(max_generation_tokens=args.gen_lim)
+            VisionTask(baseurl, args.backend_os, model_filter=model_filter).run(max_generation_tokens=args.gen_lim)
 
     except Exception as e:
         print(f"Error during testing: {e}")

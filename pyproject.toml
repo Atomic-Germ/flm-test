@@ -36,3 +36,6 @@ flm-test = "flm_test:main"
 
 [tool.setuptools]
 packages = ["flm_test"]
+
+[tool.setuptools.package-data]
+flm_test = ["test_files/**/*.png", "test_files/**/*.jpg", "test_files/**/*.jpeg", "test_files/**/*.mp3"]

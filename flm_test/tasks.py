@@ -9,8 +9,13 @@ import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 
 from openai import OpenAI
+
+# Media assets ship inside the package; anchor paths here so tests work
+# regardless of the current working directory (repo checkout or pip/uv install).
+PACKAGE_DIR = Path(__file__).resolve().parent
 
 class BaseTestTask(ABC):
     """
@@ -202,7 +207,7 @@ class AudioTask(BaseTestTask):
         # an explicit filter always wins so any audio-capable model can be tested.
         if not model_filter:
             self.models = [m for m in self.models if m in self.AUDIO_MODELS]
-        self.test_audio_path = "./test_files/audio/atomic-germ.mp3"
+        self.test_audio_path = PACKAGE_DIR / "test_files" / "audio" / "atomic-germ.mp3"
         self.csv_filename = self.get_csv_filename("audio")
 
     def _load_audio_base64(self, audio_path) -> str:
@@ -284,9 +289,9 @@ class VisionTask(BaseTestTask):
 
     def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
         super().__init__(base_url, backend_os, model_filter=model_filter)
-        self.test_image1_path = "./test_files/image/paris.png"
-        self.test_image2_path = "./test_files/image/test_image2.jpg"
-        self.test_image3_path = "./test_files/image/spectrogram.png"
+        self.test_image1_path = PACKAGE_DIR / "test_files" / "image" / "paris.png"
+        self.test_image2_path = PACKAGE_DIR / "test_files" / "image" / "seagull.jpeg"
+        self.test_image3_path = PACKAGE_DIR / "test_files" / "image" / "spectrogram.png"
         self.csv_filename = self.get_csv_filename("vision")
         # Tolerant regex: case-insensitive, flexible whitespace, optional apostrophe.
         escaped_words = [re.escape(word) for word in self.EXPECTED_TEXT.split()]

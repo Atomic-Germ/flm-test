@@ -81,6 +81,7 @@ flm-test --audio --model whisper-v3:turbo
 # Configuration
 flm-test --llm --port 56354       # Set a custom port for LFM
 flm-test --llm --gen-lim 32       # Limit LLM output to 32 tokens
+flm-test --vision --temp 0.7      # Set sampling temperature (all chat-based tests; omit for server default)
 ```
 
 ## Test Types

@@ -102,7 +102,7 @@ class LLMTask(BaseTestTask):
         self.models = [m for m in self.models if m not in ("gpt-oss:20b", "gpt-oss-sg:20b", "qwen3.5:4b", "qwen3.5:9b", "medgemma:4b", "medgemma1.5:4b", "translategemma:4b")]
         self.csv_filename = self.get_csv_filename("llm")
 
-    def _run_two_rounds(self, writer, model_id, prompt, followup_prompt, stream, max_completion_tokens):
+    def _run_two_rounds(self, writer, model_id, prompt, followup_prompt, stream, max_completion_tokens, temperature=None):
         mode = "Stream" if stream else "Non-Stream"
         messages = [{"role": "user", "content": prompt}]
 
@@ -114,6 +114,7 @@ class LLMTask(BaseTestTask):
                 messages=messages,
                 stream=stream,
                 max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
             )
             if stream:
                 reasoning_content, output_content = self._collect_stream(response)
@@ -137,6 +138,7 @@ class LLMTask(BaseTestTask):
                 messages=messages,
                 stream=stream,
                 max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
             )
             if stream:
                 reasoning_content, output_content = self._collect_stream(response)
@@ -150,7 +152,7 @@ class LLMTask(BaseTestTask):
             print(f"Error occurred in second round, model: {model_id}: {e}")
             writer.writerow([model_id, mode, followup_prompt, f"ERROR: {e}", "N/A"])
 
-    def run(self, max_completion_tokens=-1):
+    def run(self, max_completion_tokens=-1, temperature=None):
         prompt = "Teach me Maxwell's equations."
         followup_prompt = "Summarize your answer."
 
@@ -168,7 +170,7 @@ class LLMTask(BaseTestTask):
                 # print("Testing non-stream mode...\n")
                 # self._run_two_rounds(writer, model_id, prompt, followup_prompt, stream=False, max_completion_tokens=max_completion_tokens)
                 print("\nTesting stream mode...\n")
-                self._run_two_rounds(writer, model_id, stream_prompt, stream_followup_prompt, stream=True, max_completion_tokens=max_completion_tokens)
+                self._run_two_rounds(writer, model_id, stream_prompt, stream_followup_prompt, stream=True, max_completion_tokens=max_completion_tokens, temperature=temperature)
                 print(f"Finished testing model: {model_id}")
         print(f"\nLLM tests complete. Saved to {self.csv_filename}")
 
@@ -214,7 +216,7 @@ class AudioTask(BaseTestTask):
         with open(audio_path, "rb") as audio_file:
             return base64.b64encode(audio_file.read()).decode('utf-8')
 
-    def run(self, max_generation_tokens=-1):
+    def run(self, max_generation_tokens=-1, temperature=None):
         prompt = "Describe what you hear in this audio clip."
         followup_prompt = "What kind of mood or genre would this clip fit into?"
 
@@ -245,6 +247,7 @@ class AudioTask(BaseTestTask):
                         messages=messages,
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
+                        temperature=temperature,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     music_check = "PASS" if self.MUSIC_PATTERN.search(output_content) else "SOFT-FAIL"
@@ -269,6 +272,7 @@ class AudioTask(BaseTestTask):
                         messages=messages,
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
+                        temperature=temperature,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     writer.writerow([model_id, followup_prompt, reasoning_content or "N/A", output_content, "N/A"])
@@ -307,7 +311,7 @@ class VisionTask(BaseTestTask):
         with open(image_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode('utf-8')
 
-    def run(self, max_generation_tokens=-1):
+    def run(self, max_generation_tokens=-1, temperature=None):
         prompt = "Extract text from the first image, describe the second one, and imagine what the spectrogram might sound like."
         followup_prompt = "Make a story that connects the images together."
         followup_prompt_music = "What kind of sound does the spectrogram represent?"
@@ -346,6 +350,7 @@ class VisionTask(BaseTestTask):
                         messages=messages,
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
+                        temperature=temperature,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     text_check = "PASS" if self.expected_text_pattern.search(output_content) else "FAIL"
@@ -374,6 +379,7 @@ class VisionTask(BaseTestTask):
                         messages=messages,
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
+                        temperature=temperature,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     seagull_in_story = "PASS" if self.SEAGULL_PATTERN.search(output_content) else "FAIL"
@@ -404,6 +410,7 @@ class VisionTask(BaseTestTask):
                             messages=messages,
                             stream=True,
                             max_completion_tokens=max_generation_tokens,
+                            temperature=temperature,
                         )
                         reasoning_content, output_content = self._collect_stream(response)
                         music_check = "PASS" if self.MUSIC_PATTERN.search(output_content) else "SOFT-FAIL"

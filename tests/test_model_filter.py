@@ -70,17 +70,29 @@ class TestBaseModelFilter(unittest.TestCase):
 
 class TestVisionModelFilter(unittest.TestCase):
 
-    def test_filter_intersects_with_vlm_allowlist(self):
-        """Only models in BOTH the VLM allow-list AND the user filter should survive."""
+    def test_filter_intersects_with_server_models(self):
+        """Only models in BOTH the server list AND the user filter should survive."""
         task = _make_task(VisionTask, model_filter=["gemma3:4b", "some-llm:7b"])
-        # gemma3:4b is in VisionTask.vlm; some-llm:7b is not
+        self.assertCountEqual(task.models, ["gemma3:4b", "some-llm:7b"])
+
+    def test_no_filter_keeps_all_server_models(self):
+        """Without --model, VisionTask runs every model the server exposes."""
+        task = _make_task(VisionTask)
+        self.assertEqual(task.models, FAKE_SERVER_MODELS)
+
+
+class TestAudioModelFilter(unittest.TestCase):
+
+    def test_explicit_filter_overrides_audio_allowlist(self):
+        """An explicit --model always wins so any audio-capable model can be tested."""
+        task = _make_task(AudioTask, model_filter=["gemma3:4b"])
         self.assertEqual(task.models, ["gemma3:4b"])
 
-    def test_no_filter_keeps_only_vlm_models(self):
-        """Without --model, VisionTask only returns VLM-allowlisted models."""
-        task = _make_task(VisionTask)
+    def test_no_filter_keeps_only_audio_models(self):
+        """Without --model, only recognised audio models survive."""
+        task = _make_task(AudioTask)
         for m in task.models:
-            self.assertIn(m, task.vlm)
+            self.assertIn(m, AudioTask.AUDIO_MODELS)
 
 
 class TestEmbeddingModelFilter(unittest.TestCase):

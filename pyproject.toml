@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flm-test"
-version = "0.1.1"
+version = "0.2.1"
 description = "A comprehensive testing framework for FastFlowLM that validates the functionality of various AI model categories including Language, Embedding, Audio, and Vision models."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
-keywords = ["flm", "fastflowlm", "q4nx", "npu", "model-testing"]
+keywords = ["flm", "fastflowlm", "q4nx", "npu", "model-testing", "vision", "audio", "text"]
 classifiers = [
     "Environment :: Console",
     "Operating System :: OS Independent",

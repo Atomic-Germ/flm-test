@@ -121,7 +121,7 @@ class TestArgParsing(unittest.TestCase):
         parser.add_argument('--audio', action='store_true')
         parser.add_argument('--all', action='store_true')
         parser.add_argument('--gen-lim', type=int, default=-1)
-        parser.add_argument('--temp', '--temperature', type=float, default=None)
+        parser.add_argument('--temp', '--temperature', type=float, default=0.3)
         parser.add_argument('--port', type=str, default='52625')
         parser.add_argument('--backend-os', type=str, default='linux',
                             choices=['linux', 'windows'])
@@ -149,10 +149,10 @@ class TestArgParsing(unittest.TestCase):
         args = self._make_parser().parse_args(['--vision', '--temperature', '0.2'])
         self.assertEqual(args.temp, 0.2)
 
-    def test_temp_arg_default_is_none(self):
-        """When --temp is omitted, no temperature is sent and the server default applies."""
+    def test_temp_arg_defaults_to_0_3(self):
+        """When --temp is omitted, a 0.3 sampling temperature is sent (never JSON null)."""
         args = self._make_parser().parse_args(['--audio'])
-        self.assertIsNone(args.temp)
+        self.assertEqual(args.temp, 0.3)
 
 
 if __name__ == "__main__":

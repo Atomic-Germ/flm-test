@@ -10,6 +10,7 @@ flm-test is designed to thoroughly test FastFlowLM's API compatibility and model
 - **Embedding Tests**: Text embedding model validation
 - **Audio Tests**: Audio understanding via chat completions, with a bundled music clip
 - **Vision Tests**: Vision-Language Model (VLM) tests with multi-image support and automated response checking
+- **Tool Calling Tests**: Function/tool-calling across five escalating complexity levels, in streaming and non-streaming modes
 
 All test media is **bundled inside the package**, so no extra downloads or local paths are needed once installed.
 
@@ -72,6 +73,7 @@ flm-test --llm                    # LLM tests only
 flm-test --embedding              # Embedding tests only
 flm-test --audio                  # Audio tests only
 flm-test --vision                 # Vision tests only
+flm-test --tools                  # Tool-calling tests only
 
 # Target a specific model (instead of all available models)
 flm-test --llm --model gemma3:4b
@@ -81,7 +83,7 @@ flm-test --audio --model whisper-v3:turbo
 # Configuration
 flm-test --llm --port 56354       # Set a custom port for LFM
 flm-test --llm --gen-lim 32       # Limit LLM output to 32 tokens
-flm-test --vision --temp 0.7      # Set sampling temperature (all chat-based tests; omit for server default)
+flm-test --vision --temp 0.7      # Set sampling temperature (all chat-based tests; defaults to 0.3, a common tool-calling setting)
 ```
 
 ## Test Types
@@ -160,6 +162,37 @@ By default, audio tests run against known audio models (currently `whisper-v3:tu
 
 **Output:** `audio_results_v{version}_{timestamp}.csv`
 
+### Tool Calling Tests
+Tests OpenAI-compatible function/tool-calling across five escalating complexity levels. Each level runs in both **non-streaming** and **streaming** mode.
+
+**What it tests:**
+- Emitting well-formed tool calls with valid JSON arguments (streamed and non-streamed)
+- Inferring argument values from indirect references and resisting decoy tools
+- Restraint: not calling tools when none are needed (negative control)
+- Parallel tool calls for multiple independent requests in one turn
+- The full tool loop: call → locally executed result → final answer grounded in the result
+
+| Level | Name | Scenario |
+|-------|------|----------|
+| L1 | Basic Tool Call | Current weather in Paris; arguments appear verbatim in the prompt |
+| L2 | Argument Extraction | Weather for "the city where the Eiffel Tower stands", with a forecast decoy tool available |
+| L3 | Tool Restraint | Capital-of-France question with tools bound; nothing should be called |
+| L4 | Parallel Tool Calls | Compare current weather in Paris and Tokyo in one turn |
+| L5 | Multi-Turn Tool Loop | Look up widget price via a tool, then compute 3 widgets at 10% discount |
+
+Tool results in L5 are produced by built-in mock implementations (deterministic fake weather/price databases), so no external services are required. Widget price is $20.00, so a correct final answer contains **54** (3 × $20 − 10%).
+
+**Automated Checks:**
+| Check | Verdict | Description |
+|-------|---------|-------------|
+| L1/L2 Tool Call Check | PASS / FAIL | `get_current_weather` called with valid JSON arguments and a location containing the expected city |
+| L3 Restraint Check | PASS / SOFT-FAIL / FAIL | No tool calls and a direct answer mentioning Paris; SOFT-FAIL if answered correctly without naming Paris; FAIL if any tool was called or the answer is empty |
+| L4 Parallel Check | PASS / SOFT-FAIL / FAIL | At least two calls covering both cities; SOFT-FAIL if only one call was issued |
+| L5 Lookup Check | PASS / FAIL | `lookup_item_price` called with item 'widget' |
+| L5 Final Answer Check | PASS / FAIL | Final answer reflects the computed total of $54 |
+
+**Output:** `tools_results_v{version}_{timestamp}.csv`
+
 ## Understanding Results
 
 Test results are saved as CSV files under timestamped directories:
@@ -200,6 +233,18 @@ results/{timestamp}/{backend_os}/{test_type}_results_v{flm_version}.csv
 | Reasoning Content | Internal reasoning (if available) |
 | Output Content | Model's response |
 | Music Mention Check | PASS / SOFT-FAIL / ERROR |
+
+**Tools Results:**
+| Column | Description |
+|--------|-------------|
+| Model | Model ID/name |
+| Complexity Level | L1–L5 scenario name |
+| Mode | "Stream" or "Non-Stream" |
+| Input | The prompt sent to the model |
+| Reasoning Content | Internal reasoning (if available) |
+| Output Content | Model's textual response |
+| Tool Calls | JSON summary of the tool calls requested by the model (name + parsed arguments), or "None" |
+| Check Result | Verdict with detail, e.g. "PASS", "FAIL: no tool call issued" |
 
 ### Interpreting Results
 

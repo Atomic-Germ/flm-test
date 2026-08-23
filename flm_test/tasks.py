@@ -17,6 +17,10 @@ from openai import OpenAI
 # regardless of the current working directory (repo checkout or pip/uv install).
 PACKAGE_DIR = Path(__file__).resolve().parent
 
+# Specialised (non-general-chat) models excluded from chat-based suites.
+NON_CHAT_MODELS = ("gpt-oss:20b", "gpt-oss-sg:20b", "qwen3.5:4b", "qwen3.5:9b",
+                   "medgemma:4b", "medgemma1.5:4b", "translategemma:4b")
+
 class BaseTestTask(ABC):
     """
     Abstract base class for all testing tasks.
@@ -99,7 +103,7 @@ class LLMTask(BaseTestTask):
 
     def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
         super().__init__(base_url, backend_os, model_filter=model_filter)
-        self.models = [m for m in self.models if m not in ("gpt-oss:20b", "gpt-oss-sg:20b", "qwen3.5:4b", "qwen3.5:9b", "medgemma:4b", "medgemma1.5:4b", "translategemma:4b")]
+        self.models = [m for m in self.models if m not in NON_CHAT_MODELS]
         self.csv_filename = self.get_csv_filename("llm")
 
     def _run_two_rounds(self, writer, model_id, prompt, followup_prompt, stream, max_completion_tokens, temperature=None):
@@ -152,7 +156,7 @@ class LLMTask(BaseTestTask):
             print(f"Error occurred in second round, model: {model_id}: {e}")
             writer.writerow([model_id, mode, followup_prompt, f"ERROR: {e}", "N/A"])
 
-    def run(self, max_completion_tokens=-1, temperature=None):
+    def run(self, max_completion_tokens=-1, temperature=0.3):
         prompt = "Teach me Maxwell's equations."
         followup_prompt = "Summarize your answer."
 
@@ -216,7 +220,7 @@ class AudioTask(BaseTestTask):
         with open(audio_path, "rb") as audio_file:
             return base64.b64encode(audio_file.read()).decode('utf-8')
 
-    def run(self, max_generation_tokens=-1, temperature=None):
+    def run(self, max_generation_tokens=-1, temperature=0.3):
         prompt = "Describe what you hear in this audio clip."
         followup_prompt = "What kind of mood or genre would this clip fit into?"
 
@@ -311,7 +315,7 @@ class VisionTask(BaseTestTask):
         with open(image_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode('utf-8')
 
-    def run(self, max_generation_tokens=-1, temperature=None):
+    def run(self, max_generation_tokens=-1, temperature=0.3):
         prompt = "Extract text from the first image, describe the second one, and imagine what the spectrogram might sound like."
         followup_prompt = "Make a story that connects the images together."
         followup_prompt_music = "What kind of sound does the spectrogram represent?"
@@ -430,6 +434,385 @@ class VisionTask(BaseTestTask):
                                          "N/A", "N/A", "ERROR"])
                 else:
                     writer.writerow([model_id, followup_prompt_music,
-                                     "SKIPPED: second round failed", "N/A", "N/A", "N/A", "SKIPPED"])
+                                     "SKIPPED: second round failed", "N/A", "N/A", "SKIPPED"])
                 print(f"Finished testing model: {model_id}")
         print(f"Vision tests complete. Saved to {self.csv_filename}")
+
+
+class ToolCallingTask(BaseTestTask):
+    """
+    Tests OpenAI-compatible function/tool calling at five escalating
+    complexity levels, each run in both streaming and non-streaming mode:
+
+      L1 Basic Tool Call      One obvious call whose arguments appear verbatim
+                              in the prompt.
+      L2 Argument Extraction  The argument must be inferred from an indirect
+                              reference, with a decoy forecast tool present.
+      L3 Tool Restraint       A question answerable without tools; the model
+                              should not call anything (negative control).
+      L4 Parallel Tool Calls  Several independent calls belong in one turn.
+      L5 Multi-Turn Tool Loop The model must call a tool, consume the locally
+                              executed result, and ground its final answer in it.
+
+    Automated checks validate tool names, JSON argument validity/values and,
+    for L5, the arithmetic derived from the tool result ($54 total).
+    """
+
+    TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_weather",
+                "description": "Get the current weather in a given location.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City name, e.g. 'Paris'."},
+                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"],
+                                 "description": "Temperature unit; defaults to celsius."},
+                    },
+                    "required": ["location"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather_forecast",
+                "description": "Get the multi-day weather forecast for a location.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City name, e.g. 'Paris'."},
+                        "days": {"type": "integer", "description": "Number of forecast days."},
+                    },
+                    "required": ["location"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_item_price",
+                "description": "Look up the unit price of an item in the store catalog.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item": {"type": "string", "description": "Item name, e.g. 'widget'."},
+                    },
+                    "required": ["item"],
+                },
+            },
+        },
+    ]
+
+    # Deterministic mock backing stores so the loop level needs no external services.
+    WEATHER_DB = {
+        "paris": {"temperature_celsius": 18, "conditions": "partly cloudy", "humidity_percent": 63},
+        "tokyo": {"temperature_celsius": 24, "conditions": "sunny", "humidity_percent": 55},
+    }
+    PRICE_DB = {"widget": 20.0, "gadget": 49.99, "doohickey": 7.25}
+    DEFAULT_TEMPERATURE_CELSIUS = 21
+    DEFAULT_PRICE_USD = 9.99
+
+    BASIC_PROMPT = "What's the current weather in Paris right now? Use the tools available to you."
+    EXTRACTION_PROMPT = ("A friend of mine lives in the city where the Eiffel Tower stands. "
+                         "Use your tools to tell me the current weather there.")
+    RESTRAINT_PROMPT = ("Do not call any tools. Answer directly from your own knowledge: "
+                        "what is the capital of France?")
+    PARALLEL_PROMPT = "Using your tools, compare the current weather in Paris and Tokyo."
+    LOOP_PROMPT = ("Use the price lookup tool to check the unit price of a 'widget', then tell me "
+                   "what 3 widgets would cost after a 10% discount. Do the math yourself.")
+
+    LEVEL_NAMES = [
+        "L1 Basic Tool Call",
+        "L2 Argument Extraction",
+        "L3 Tool Restraint",
+        "L4 Parallel Tool Calls",
+        "L5 Multi-Turn Tool Loop",
+    ]
+
+    FINAL_ANSWER_PATTERN = re.compile(r"\b54(\.0{1,2})?\b")
+    MAX_TOOL_ROUNDS = 3
+
+    def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
+        super().__init__(base_url, backend_os, model_filter=model_filter)
+        self.models = [m for m in self.models if m not in NON_CHAT_MODELS]
+        self.csv_filename = self.get_csv_filename("tools")
+
+    @staticmethod
+    def _parse_arguments(raw) -> dict | None:
+        """Normalises tool-call arguments into a dict; None if not valid JSON object."""
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @staticmethod
+    def _format_tool_calls(tool_calls: list[dict]) -> str:
+        """Compact CSV-friendly summary of requested tool calls."""
+        if not tool_calls:
+            return "None"
+        formatted = []
+        for tc in tool_calls:
+            args = ToolCallingTask._parse_arguments(tc.get("arguments"))
+            formatted.append({"name": tc.get("name"),
+                              "arguments": args if args is not None else tc.get("arguments")})
+        return json.dumps(formatted, ensure_ascii=False)
+
+    def _execute_tool(self, name: str, arguments: dict) -> str:
+        """Local mock implementations backing every advertised tool."""
+        if name == "get_current_weather":
+            location = str(arguments.get("location", "unknown"))
+            data = dict(self.WEATHER_DB.get(location.strip().lower(),
+                                            {"temperature_celsius": self.DEFAULT_TEMPERATURE_CELSIUS,
+                                             "conditions": "sunny",
+                                             "humidity_percent": 40}))
+            data["location"] = location
+            if arguments.get("unit") == "fahrenheit":
+                data["temperature_fahrenheit"] = round(data["temperature_celsius"] * 9 / 5 + 32, 1)
+            return json.dumps(data)
+        if name == "get_weather_forecast":
+            location = str(arguments.get("location", "unknown"))
+            return json.dumps({
+                "location": location,
+                "forecast": [
+                    {"day": i + 1,
+                     "high_celsius": 20 + (i % 3),
+                     "low_celsius": 12 + (i % 2),
+                     "conditions": "sunny" if i % 2 == 0 else "cloudy"}
+                    for i in range(int(arguments.get("days") or 3))
+                ],
+            })
+        if name == "lookup_item_price":
+            item = str(arguments.get("item", "unknown"))
+            price = self.PRICE_DB.get(item.strip().lower(), self.DEFAULT_PRICE_USD)
+            return json.dumps({"item": item, "unit_price_usd": price})
+        return json.dumps({"error": f"unknown tool '{name}'"})
+
+    def _collect_stream_with_tools(self, response) -> tuple[str, str, list[dict]]:
+        """Like _collect_stream but also assembles streamed tool-call deltas."""
+        reasoning_content, output_content = "", ""
+        accumulated: dict[int, dict] = {}
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if getattr(delta, "reasoning_content", None):
+                reasoning_content += delta.reasoning_content
+            if delta.content:
+                output_content += delta.content
+            for tc_delta in (getattr(delta, "tool_calls", None) or []):
+                index = tc_delta.index if tc_delta.index is not None else len(accumulated)
+                entry = accumulated.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                if tc_delta.id:
+                    entry["id"] += tc_delta.id
+                fn = getattr(tc_delta, "function", None)
+                if fn is not None:
+                    if fn.name:
+                        entry["name"] += fn.name
+                    if fn.arguments:
+                        entry["arguments"] += fn.arguments
+        tool_calls = [{"id": entry["id"], "name": entry["name"], "arguments": entry["arguments"]}
+                      for _, entry in sorted(accumulated.items())]
+        return reasoning_content, output_content, tool_calls
+
+    def _call_model(self, model_id, messages, stream, max_completion_tokens, temperature):
+        """One chat completion with tools bound; returns (reasoning, content, tool_calls)."""
+        response = self.client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            tools=self.TOOLS,
+            stream=stream,
+            max_completion_tokens=max_completion_tokens,
+            temperature=temperature,
+        )
+        if stream:
+            return self._collect_stream_with_tools(response)
+        message = response.choices[0].message
+        tool_calls = [
+            {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
+            for tc in (message.tool_calls or [])
+        ]
+        reasoning = getattr(message, "reasoning_content", None) or ""
+        return reasoning, message.content or "", tool_calls
+
+    # ------------------------------------------------------------------ checks
+
+    def _verify_weather_call(self, tool_calls, expected_city_fragment):
+        """Shared check for L1/L2: correct tool, valid JSON, expected location."""
+        if not tool_calls:
+            return ("FAIL", "no tool call issued")
+        first = tool_calls[0]
+        if first["name"] != "get_current_weather":
+            return ("FAIL", f"expected 'get_current_weather', got '{first['name'] or '<empty>'}'")
+        args = self._parse_arguments(first["arguments"])
+        if args is None:
+            return ("FAIL", "tool arguments are not a valid JSON object")
+        location = str(args.get("location", ""))
+        if expected_city_fragment.lower() not in location.lower():
+            return ("FAIL", f"expected location to contain '{expected_city_fragment}', got '{location}'")
+        return ("PASS", f"called get_current_weather with location '{location}'")
+
+    def _check_restraint(self, content, tool_calls):
+        """L3 negative control: no tool calls, and a direct Paris answer."""
+        if tool_calls:
+            names = [tc["name"] for tc in tool_calls]
+            return ("FAIL", f"called {names} when no tool was needed")
+        if not content.strip():
+            return ("FAIL", "empty response")
+        if "paris" in content.lower():
+            return ("PASS", "answered directly without any tool call")
+        return ("SOFT-FAIL", "no tool call, but answer did not mention Paris")
+
+    def _check_parallel(self, content, tool_calls):
+        """L4: at least two calls covering both requested cities."""
+        if not tool_calls:
+            return ("FAIL", "no tool call issued")
+        locations = []
+        for tc in tool_calls:
+            if tc["name"] != "get_current_weather":
+                continue
+            args = self._parse_arguments(tc["arguments"])
+            if args:
+                locations.append(str(args.get("location", "")).lower())
+        has_paris = any("paris" in loc for loc in locations)
+        has_tokyo = any("tokyo" in loc for loc in locations)
+        if len(tool_calls) >= 2 and has_paris and has_tokyo:
+            return ("PASS", f"{len(tool_calls)} parallel calls covering both cities")
+        if len(tool_calls) == 1:
+            return ("SOFT-FAIL", "only one call issued; parallel calling not exercised")
+        return ("FAIL", "calls did not cover both requested cities")
+
+    def _check_lookup_call(self, tool_calls):
+        """L5 first round: price lookup requested for a widget."""
+        if not tool_calls:
+            return ("FAIL", "no tool call issued for the price lookup")
+        first = tool_calls[0]
+        if first["name"] != "lookup_item_price":
+            return ("FAIL", f"expected 'lookup_item_price', got '{first['name'] or '<empty>'}'")
+        args = self._parse_arguments(first["arguments"])
+        if args is None:
+            return ("FAIL", "tool arguments are not a valid JSON object")
+        item = str(args.get("item", ""))
+        if "widget" not in item.lower():
+            return ("FAIL", f"expected item to contain 'widget', got '{item}'")
+        return ("PASS", f"requested price for '{item}'")
+
+    def _check_final_answer(self, content):
+        """L5 last round: final answer reflects 3 x $20 less 10% => $54."""
+        if self.FINAL_ANSWER_PATTERN.search(content):
+            return ("PASS", "final answer contains the computed total ($54)")
+        return ("FAIL", "computed total $54 not found in final answer")
+
+    # ----------------------------------------------------------------- runners
+
+    def _write_row(self, writer, model_id, level_name, mode, prompt,
+                   reasoning, content, tool_calls, verdict_detail):
+        verdict, detail = verdict_detail if isinstance(verdict_detail, tuple) else (verdict_detail, "")
+        writer.writerow([model_id, level_name, mode, prompt,
+                         reasoning or "N/A", content or "N/A",
+                         self._format_tool_calls(tool_calls),
+                         verdict if not detail else f"{verdict}: {detail}"])
+
+    def _run_single_round_level(self, writer, model_id, level_name, prompt, checker,
+                                stream, max_completion_tokens, temperature):
+        mode = "Stream" if stream else "Non-Stream"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            print(f"{level_name}: {prompt}")
+            reasoning, content, tool_calls = self._call_model(
+                model_id, messages, stream, max_completion_tokens, temperature)
+            verdict = checker(content, tool_calls)
+            self._write_row(writer, model_id, level_name, mode, prompt,
+                            reasoning, content, tool_calls, verdict)
+            print(f"Check result: {verdict[0]} ({verdict[1]})")
+        except Exception as e:
+            print(f"Error occurred in {level_name}, model: {model_id}: {e}")
+            self._write_row(writer, model_id, level_name, mode, prompt,
+                            f"ERROR: {e}", "N/A", [], "ERROR")
+        time.sleep(1)
+
+    def _run_loop_level(self, writer, model_id, stream, max_completion_tokens, temperature):
+        level_name = self.LEVEL_NAMES[4]
+        mode = "Stream" if stream else "Non-Stream"
+        followup_label = f"{self.LOOP_PROMPT} [with tool result fed back]"
+        messages = [{"role": "user", "content": self.LOOP_PROMPT}]
+        wrote_first_row = False
+        try:
+            print(f"{level_name}: {self.LOOP_PROMPT}")
+            finished = False
+            for round_index in range(self.MAX_TOOL_ROUNDS):
+                reasoning, content, tool_calls = self._call_model(
+                    model_id, messages, stream, max_completion_tokens, temperature)
+                if round_index == 0:
+                    verdict = self._check_lookup_call(tool_calls)
+                    self._write_row(writer, model_id, level_name, mode, self.LOOP_PROMPT,
+                                    reasoning, content, tool_calls, verdict)
+                    wrote_first_row = True
+                    print(f"Lookup check result: {verdict[0]} ({verdict[1]})")
+                if not tool_calls:
+                    verdict = self._check_final_answer(content)
+                    self._write_row(writer, model_id, level_name, mode,
+                                    self.LOOP_PROMPT if round_index == 0 else followup_label,
+                                    reasoning, content, tool_calls, verdict)
+                    print(f"Final answer check result: {verdict[0]} ({verdict[1]})")
+                    finished = True
+                    break
+                messages.append({
+                    "role": "assistant",
+                    "content": content or None,
+                    "tool_calls": [
+                        {"id": tc["id"], "type": "function",
+                         "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        for tc in tool_calls
+                    ],
+                })
+                for tc in tool_calls:
+                    args = self._parse_arguments(tc["arguments"]) or {}
+                    result = self._execute_tool(tc["name"], args)
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                time.sleep(1)
+            if not finished:
+                verdict = ("FAIL", f"still requesting tools after {self.MAX_TOOL_ROUNDS} rounds")
+                self._write_row(writer, model_id, level_name, mode, followup_label,
+                                reasoning, content, tool_calls, verdict)
+                print(f"Final answer check result: FAIL ({verdict[1]})")
+        except Exception as e:
+            print(f"Error occurred in {level_name}, model: {model_id}: {e}")
+            label = followup_label if wrote_first_row else self.LOOP_PROMPT
+            self._write_row(writer, model_id, level_name, mode, label,
+                            f"ERROR: {e}", "N/A", [], "ERROR")
+        time.sleep(1)
+
+    def run(self, max_completion_tokens=-1, temperature=0.3):
+        single_round_levels = [
+            (self.LEVEL_NAMES[0], self.BASIC_PROMPT,
+             lambda content, tcs: self._verify_weather_call(tcs, "Paris")),
+            (self.LEVEL_NAMES[1], self.EXTRACTION_PROMPT,
+             lambda content, tcs: self._verify_weather_call(tcs, "Paris")),
+            (self.LEVEL_NAMES[2], self.RESTRAINT_PROMPT, self._check_restraint),
+            (self.LEVEL_NAMES[3], self.PARALLEL_PROMPT, self._check_parallel),
+        ]
+
+        with open(self.csv_filename, mode='w', newline='', encoding='utf-8') as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["Model", "Complexity Level", "Mode", "Input",
+                             "Reasoning Content", "Output Content", "Tool Calls", "Check Result"])
+            print("\n=== Starting Tool Calling Tests ===")
+            print(f"Models found: {len(self.models)}")
+            for model_id in self.models:
+                print(f"\n--- Testing tool-calling model: {model_id} ---")
+                for mode_label, stream in (("Non-Stream", False), ("Stream", True)):
+                    print(f"\nTesting {mode_label.lower()} mode...")
+                    for level_name, prompt, checker in single_round_levels:
+                        self._run_single_round_level(writer, model_id, level_name, prompt, checker,
+                                                     stream, max_completion_tokens, temperature)
+                    self._run_loop_level(writer, model_id, stream, max_completion_tokens, temperature)
+                print(f"Finished testing model: {model_id}")
+        print(f"\nTool calling tests complete. Saved to {self.csv_filename}")

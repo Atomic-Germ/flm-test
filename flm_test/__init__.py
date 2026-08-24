@@ -21,6 +21,11 @@ def main():
     parser.add_argument('--temp', '--temperature', type=float, default=0.3, metavar='TEMP',
                         help="Sampling temperature for chat-based tests (e.g. 0.7). "
                              "Defaults to 0.3, a common setting for reliable tool calling.")
+    parser.add_argument('--reasoning', type=str, default=None, metavar='LEVEL',
+                        choices=["none", "low", "medium", "high"],
+                        help="Reasoning effort sent as `reasoning_effort` with every chat request. "
+                             "low/medium/high progressively enable thinking; none disables it. "
+                             "Omit the flag to leave each model's own default behaviour untouched.")
     parser.add_argument("--port", type=str, default="52625", help="Port your FLM instance is running on.")
     parser.add_argument('--backend-os', type=str, default="linux", choices=["linux", "windows"], help="OS of the FLM backend (default: linux)")
     parser.add_argument('--model', type=str, nargs='+', metavar='MODEL_ID',
@@ -47,19 +52,19 @@ def main():
         model_filter = args.model  # list[str] | None
 
         if args.llm:
-            LLMTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim, temperature=args.temp)
+            LLMTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim, temperature=args.temp, reasoning=args.reasoning)
 
         if args.embedding:
             EmbeddingTask(baseurl, args.backend_os, model_filter=model_filter).run()
 
         if args.audio:
-            AudioTask(baseurl, args.backend_os, model_filter=model_filter).run(temperature=args.temp)
+            AudioTask(baseurl, args.backend_os, model_filter=model_filter).run(temperature=args.temp, reasoning=args.reasoning)
 
         if args.vision:
-            VisionTask(baseurl, args.backend_os, model_filter=model_filter).run(max_generation_tokens=args.gen_lim, temperature=args.temp)
+            VisionTask(baseurl, args.backend_os, model_filter=model_filter).run(max_generation_tokens=args.gen_lim, temperature=args.temp, reasoning=args.reasoning)
 
         if args.tools:
-            ToolCallingTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim, temperature=args.temp)
+            ToolCallingTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim, temperature=args.temp, reasoning=args.reasoning)
 
     except Exception as e:
         print(f"Error during testing: {e}")

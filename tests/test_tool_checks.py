@@ -322,6 +322,42 @@ class TestCallModelNonStream(unittest.TestCase):
         self.assertEqual(json.loads(tool_calls[0]["arguments"]), {"location": "Paris"})
 
 
+class TestCallModelReasoningForwarding(unittest.TestCase):
+    """_call_model must forward the requested reasoning effort to the API."""
+
+    def _capturing_task(self):
+        task = _make_task()
+        captured = {}
+
+        def fake_create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=[]))])
+
+        task.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=fake_create)))
+        return task, captured
+
+    def _call(self, task, **overrides):
+        kwargs = dict(model_id="test-model",
+                      messages=[{"role": "user", "content": "hi"}],
+                      stream=False, max_completion_tokens=-1,
+                      temperature=None, reasoning=None)
+        kwargs.update(overrides)
+        return task._call_model(**kwargs)
+
+    def test_reasoning_effort_forwarded(self):
+        task, captured = self._capturing_task()
+        self._call(task, reasoning="high")
+        self.assertEqual(captured["reasoning_effort"], "high")
+
+    def test_no_reasoning_sends_nothing(self):
+        """Without --reasoning no reasoning_effort key reaches the request body."""
+        task, captured = self._capturing_task()
+        self._call(task)
+        self.assertNotIn("reasoning_effort", captured)
+
+
 class TestFormatToolCalls(unittest.TestCase):
 
     def setUp(self):

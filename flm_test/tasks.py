@@ -46,6 +46,17 @@ class BaseTestTask(ABC):
         self.results_dir = os.path.join("results", self.timestamp, backend_os)
         os.makedirs(self.results_dir, exist_ok=True)
 
+    # FLM's OpenAI-compatible API accepts `reasoning_effort` with "low",
+    # "medium" or "high" (thinking enabled) and "none" (thinking disabled).
+    REASONING_LEVELS = ("none", "low", "medium", "high")
+
+    @staticmethod
+    def _reasoning_kwargs(reasoning: str | None) -> dict:
+        """Extra kwargs for chat.completions.create setting a reasoning effort.
+        Returns {} when no level is requested so nothing is sent to the server
+        (never JSON null) and the model keeps its own default behaviour."""
+        return {"reasoning_effort": reasoning} if reasoning else {}
+
     def get_csv_filename(self, task_name: str) -> str:
         return os.path.join(self.results_dir, f"{task_name}_results_v{self.version}.csv")
 
@@ -106,7 +117,9 @@ class LLMTask(BaseTestTask):
         self.models = [m for m in self.models if m not in NON_CHAT_MODELS]
         self.csv_filename = self.get_csv_filename("llm")
 
-    def _run_two_rounds(self, writer, model_id, prompt, followup_prompt, stream, max_completion_tokens, temperature=None):
+    def _run_two_rounds(self, writer, model_id, prompt, followup_prompt, stream, max_completion_tokens,
+                        temperature=None, reasoning=None):
+        reasoning_kwargs = self._reasoning_kwargs(reasoning)
         mode = "Stream" if stream else "Non-Stream"
         messages = [{"role": "user", "content": prompt}]
 
@@ -119,6 +132,7 @@ class LLMTask(BaseTestTask):
                 stream=stream,
                 max_completion_tokens=max_completion_tokens,
                 temperature=temperature,
+                **reasoning_kwargs,
             )
             if stream:
                 reasoning_content, output_content = self._collect_stream(response)
@@ -143,6 +157,7 @@ class LLMTask(BaseTestTask):
                 stream=stream,
                 max_completion_tokens=max_completion_tokens,
                 temperature=temperature,
+                **reasoning_kwargs,
             )
             if stream:
                 reasoning_content, output_content = self._collect_stream(response)
@@ -156,7 +171,7 @@ class LLMTask(BaseTestTask):
             print(f"Error occurred in second round, model: {model_id}: {e}")
             writer.writerow([model_id, mode, followup_prompt, f"ERROR: {e}", "N/A"])
 
-    def run(self, max_completion_tokens=-1, temperature=0.3):
+    def run(self, max_completion_tokens=-1, temperature=0.3, reasoning=None):
         prompt = "Teach me Maxwell's equations."
         followup_prompt = "Summarize your answer."
 
@@ -174,7 +189,9 @@ class LLMTask(BaseTestTask):
                 # print("Testing non-stream mode...\n")
                 # self._run_two_rounds(writer, model_id, prompt, followup_prompt, stream=False, max_completion_tokens=max_completion_tokens)
                 print("\nTesting stream mode...\n")
-                self._run_two_rounds(writer, model_id, stream_prompt, stream_followup_prompt, stream=True, max_completion_tokens=max_completion_tokens, temperature=temperature)
+                self._run_two_rounds(writer, model_id, stream_prompt, stream_followup_prompt, stream=True,
+                                     max_completion_tokens=max_completion_tokens, temperature=temperature,
+                                     reasoning=reasoning)
                 print(f"Finished testing model: {model_id}")
         print(f"\nLLM tests complete. Saved to {self.csv_filename}")
 
@@ -220,11 +237,12 @@ class AudioTask(BaseTestTask):
         with open(audio_path, "rb") as audio_file:
             return base64.b64encode(audio_file.read()).decode('utf-8')
 
-    def run(self, max_generation_tokens=-1, temperature=0.3):
+    def run(self, max_generation_tokens=-1, temperature=0.3, reasoning=None):
         prompt = "Describe what you hear in this audio clip."
         followup_prompt = "What kind of mood or genre would this clip fit into?"
 
         audio_b64 = self._load_audio_base64(self.test_audio_path)
+        reasoning_kwargs = self._reasoning_kwargs(reasoning)
 
         with open(self.csv_filename, mode='w', newline='', encoding='utf-8') as csv_file:
             writer = csv.writer(csv_file)
@@ -252,6 +270,7 @@ class AudioTask(BaseTestTask):
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
                         temperature=temperature,
+                        **reasoning_kwargs,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     music_check = "PASS" if self.MUSIC_PATTERN.search(output_content) else "SOFT-FAIL"
@@ -277,6 +296,7 @@ class AudioTask(BaseTestTask):
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
                         temperature=temperature,
+                        **reasoning_kwargs,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     writer.writerow([model_id, followup_prompt, reasoning_content or "N/A", output_content, "N/A"])
@@ -315,7 +335,7 @@ class VisionTask(BaseTestTask):
         with open(image_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode('utf-8')
 
-    def run(self, max_generation_tokens=-1, temperature=0.3):
+    def run(self, max_generation_tokens=-1, temperature=0.3, reasoning=None):
         prompt = "Extract text from the first image, describe the second one, and imagine what the spectrogram might sound like."
         followup_prompt = "Make a story that connects the images together."
         followup_prompt_music = "What kind of sound does the spectrogram represent?"
@@ -323,6 +343,7 @@ class VisionTask(BaseTestTask):
         image1_b64 = self._load_image_base64(self.test_image1_path)
         image2_b64 = self._load_image_base64(self.test_image2_path)
         image3_b64 = self._load_image_base64(self.test_image3_path)
+        reasoning_kwargs = self._reasoning_kwargs(reasoning)
 
         with open(self.csv_filename, mode='w', newline='', encoding='utf-8') as csv_file:
             writer = csv.writer(csv_file)
@@ -355,6 +376,7 @@ class VisionTask(BaseTestTask):
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
                         temperature=temperature,
+                        **reasoning_kwargs,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     text_check = "PASS" if self.expected_text_pattern.search(output_content) else "FAIL"
@@ -384,6 +406,7 @@ class VisionTask(BaseTestTask):
                         stream=True,
                         max_completion_tokens=max_generation_tokens,
                         temperature=temperature,
+                        **reasoning_kwargs,
                     )
                     reasoning_content, output_content = self._collect_stream(response)
                     seagull_in_story = "PASS" if self.SEAGULL_PATTERN.search(output_content) else "FAIL"
@@ -622,7 +645,7 @@ class ToolCallingTask(BaseTestTask):
                       for _, entry in sorted(accumulated.items())]
         return reasoning_content, output_content, tool_calls
 
-    def _call_model(self, model_id, messages, stream, max_completion_tokens, temperature):
+    def _call_model(self, model_id, messages, stream, max_completion_tokens, temperature, reasoning=None):
         """One chat completion with tools bound; returns (reasoning, content, tool_calls)."""
         response = self.client.chat.completions.create(
             model=model_id,
@@ -631,6 +654,7 @@ class ToolCallingTask(BaseTestTask):
             stream=stream,
             max_completion_tokens=max_completion_tokens,
             temperature=temperature,
+            **self._reasoning_kwargs(reasoning),
         )
         if stream:
             return self._collect_stream_with_tools(response)
@@ -721,16 +745,16 @@ class ToolCallingTask(BaseTestTask):
                          verdict if not detail else f"{verdict}: {detail}"])
 
     def _run_single_round_level(self, writer, model_id, level_name, prompt, checker,
-                                stream, max_completion_tokens, temperature):
+                                stream, max_completion_tokens, temperature, reasoning=None):
         mode = "Stream" if stream else "Non-Stream"
         messages = [{"role": "user", "content": prompt}]
         try:
             print(f"{level_name}: {prompt}")
-            reasoning, content, tool_calls = self._call_model(
-                model_id, messages, stream, max_completion_tokens, temperature)
+            reasoning_content, content, tool_calls = self._call_model(
+                model_id, messages, stream, max_completion_tokens, temperature, reasoning)
             verdict = checker(content, tool_calls)
             self._write_row(writer, model_id, level_name, mode, prompt,
-                            reasoning, content, tool_calls, verdict)
+                            reasoning_content, content, tool_calls, verdict)
             print(f"Check result: {verdict[0]} ({verdict[1]})")
         except Exception as e:
             print(f"Error occurred in {level_name}, model: {model_id}: {e}")
@@ -738,7 +762,7 @@ class ToolCallingTask(BaseTestTask):
                             f"ERROR: {e}", "N/A", [], "ERROR")
         time.sleep(1)
 
-    def _run_loop_level(self, writer, model_id, stream, max_completion_tokens, temperature):
+    def _run_loop_level(self, writer, model_id, stream, max_completion_tokens, temperature, reasoning=None):
         level_name = self.LEVEL_NAMES[4]
         mode = "Stream" if stream else "Non-Stream"
         followup_label = f"{self.LOOP_PROMPT} [with tool result fed back]"
@@ -748,19 +772,19 @@ class ToolCallingTask(BaseTestTask):
             print(f"{level_name}: {self.LOOP_PROMPT}")
             finished = False
             for round_index in range(self.MAX_TOOL_ROUNDS):
-                reasoning, content, tool_calls = self._call_model(
-                    model_id, messages, stream, max_completion_tokens, temperature)
+                reasoning_content, content, tool_calls = self._call_model(
+                    model_id, messages, stream, max_completion_tokens, temperature, reasoning)
                 if round_index == 0:
                     verdict = self._check_lookup_call(tool_calls)
                     self._write_row(writer, model_id, level_name, mode, self.LOOP_PROMPT,
-                                    reasoning, content, tool_calls, verdict)
+                                    reasoning_content, content, tool_calls, verdict)
                     wrote_first_row = True
                     print(f"Lookup check result: {verdict[0]} ({verdict[1]})")
                 if not tool_calls:
                     verdict = self._check_final_answer(content)
                     self._write_row(writer, model_id, level_name, mode,
                                     self.LOOP_PROMPT if round_index == 0 else followup_label,
-                                    reasoning, content, tool_calls, verdict)
+                                    reasoning_content, content, tool_calls, verdict)
                     print(f"Final answer check result: {verdict[0]} ({verdict[1]})")
                     finished = True
                     break
@@ -781,7 +805,7 @@ class ToolCallingTask(BaseTestTask):
             if not finished:
                 verdict = ("FAIL", f"still requesting tools after {self.MAX_TOOL_ROUNDS} rounds")
                 self._write_row(writer, model_id, level_name, mode, followup_label,
-                                reasoning, content, tool_calls, verdict)
+                                reasoning_content, content, tool_calls, verdict)
                 print(f"Final answer check result: FAIL ({verdict[1]})")
         except Exception as e:
             print(f"Error occurred in {level_name}, model: {model_id}: {e}")
@@ -790,7 +814,7 @@ class ToolCallingTask(BaseTestTask):
                             f"ERROR: {e}", "N/A", [], "ERROR")
         time.sleep(1)
 
-    def run(self, max_completion_tokens=-1, temperature=0.3):
+    def run(self, max_completion_tokens=-1, temperature=0.3, reasoning=None):
         single_round_levels = [
             (self.LEVEL_NAMES[0], self.BASIC_PROMPT,
              lambda content, tcs: self._verify_weather_call(tcs, "Paris")),
@@ -806,13 +830,17 @@ class ToolCallingTask(BaseTestTask):
                              "Reasoning Content", "Output Content", "Tool Calls", "Check Result"])
             print("\n=== Starting Tool Calling Tests ===")
             print(f"Models found: {len(self.models)}")
+            if reasoning:
+                print(f"Reasoning effort requested: {reasoning}")
             for model_id in self.models:
                 print(f"\n--- Testing tool-calling model: {model_id} ---")
                 for mode_label, stream in (("Non-Stream", False), ("Stream", True)):
                     print(f"\nTesting {mode_label.lower()} mode...")
                     for level_name, prompt, checker in single_round_levels:
                         self._run_single_round_level(writer, model_id, level_name, prompt, checker,
-                                                     stream, max_completion_tokens, temperature)
-                    self._run_loop_level(writer, model_id, stream, max_completion_tokens, temperature)
+                                                     stream, max_completion_tokens, temperature,
+                                                     reasoning=reasoning)
+                    self._run_loop_level(writer, model_id, stream, max_completion_tokens, temperature,
+                                         reasoning=reasoning)
                 print(f"Finished testing model: {model_id}")
         print(f"\nTool calling tests complete. Saved to {self.csv_filename}")

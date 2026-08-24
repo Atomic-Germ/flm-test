@@ -17,7 +17,7 @@ from unittest.mock import patch
 # Make sure the package is importable from the repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from flm_test.tasks import LLMTask, VisionTask, EmbeddingTask, AudioTask
+from flm_test.tasks import LLMTask, VisionTask, EmbeddingTask, AudioTask, BaseTestTask
 
 # Fake server model list — pretend the server has these three models loaded
 FAKE_SERVER_MODELS = ["gemma3:4b", "qwen3vl-it:4b", "some-llm:7b"]
@@ -122,6 +122,8 @@ class TestArgParsing(unittest.TestCase):
         parser.add_argument('--all', action='store_true')
         parser.add_argument('--gen-lim', type=int, default=-1)
         parser.add_argument('--temp', '--temperature', type=float, default=0.3)
+        parser.add_argument('--reasoning', type=str, default=None,
+                            choices=["none", "low", "medium", "high"])
         parser.add_argument('--port', type=str, default='52625')
         parser.add_argument('--backend-os', type=str, default='linux',
                             choices=['linux', 'windows'])
@@ -153,6 +155,37 @@ class TestArgParsing(unittest.TestCase):
         """When --temp is omitted, a 0.3 sampling temperature is sent (never JSON null)."""
         args = self._make_parser().parse_args(['--audio'])
         self.assertEqual(args.temp, 0.3)
+
+    def test_reasoning_level_accepted(self):
+        args = self._make_parser().parse_args(['--llm', '--reasoning', 'high'])
+        self.assertEqual(args.reasoning, 'high')
+
+    def test_reasoning_off_via_none(self):
+        """--reasoning none disables thinking for models that support it."""
+        args = self._make_parser().parse_args(['--llm', '--reasoning', 'none'])
+        self.assertEqual(args.reasoning, 'none')
+
+    def test_reasoning_defaults_to_unset(self):
+        """When --reasoning is omitted nothing is sent; model keeps its own default."""
+        args = self._make_parser().parse_args(['--vision'])
+        self.assertIsNone(args.reasoning)
+
+    def test_reasoning_rejects_unknown_levels(self):
+        with self.assertRaises(SystemExit):
+            self._make_parser().parse_args(['--llm', '--reasoning', 'maximum'])
+
+
+class TestReasoningKwargs(unittest.TestCase):
+    """The helper that turns a requested level into chat.completions kwargs."""
+
+    def test_level_maps_to_reasoning_effort(self):
+        for level in ("none", "low", "medium", "high"):
+            self.assertEqual(BaseTestTask._reasoning_kwargs(level),
+                             {"reasoning_effort": level})
+
+    def test_unset_sends_nothing(self):
+        """No flag -> no kwarg at all, so the server never receives JSON null."""
+        self.assertEqual(BaseTestTask._reasoning_kwargs(None), {})
 
 
 if __name__ == "__main__":

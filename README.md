@@ -84,7 +84,26 @@ flm-test --audio --model whisper-v3:turbo
 flm-test --llm --port 56354       # Set a custom port for LFM
 flm-test --llm --gen-lim 32       # Limit LLM output to 32 tokens
 flm-test --vision --temp 0.7      # Set sampling temperature (all chat-based tests; defaults to 0.3, a common tool-calling setting)
+flm-test --tools --reasoning high # Set reasoning effort for all chat-based tests
 ```
+
+### Reasoning Control
+
+Some models are trained to reason ("think") before answering and perform noticeably better with it enabled — especially on tool-calling tasks. FLM's OpenAI-compatible API exposes this via `reasoning_effort`, which flm-test forwards with every chat request when requested:
+
+```bash
+flm-test --llm --reasoning high    # deep thinking enabled
+flm-test --tools --reasoning low   # light thinking enabled
+flm-test --tools --reasoning none  # thinking explicitly disabled
+```
+
+| Value | Effect |
+|-------|--------|
+| *(flag omitted)* | Nothing is sent; each model keeps its own default behaviour |
+| `none` | Thinking disabled for models that support it |
+| `low` / `medium` / `high` | Thinking enabled with increasing effort |
+
+Note that reasoning consumes completion tokens from the same budget as `--gen-lim`, so very small limits may cut thinking short before any answer text is produced.
 
 ## Test Types
 

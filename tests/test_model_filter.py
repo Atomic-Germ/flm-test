@@ -12,12 +12,14 @@ from __future__ import annotations
 import sys
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 # Make sure the package is importable from the repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from flm_test.tasks import LLMTask, VisionTask, EmbeddingTask, AudioTask, BaseTestTask
+from flm_test import resolve_suites
 
 # Fake server model list — pretend the server has these three models loaded
 FAKE_SERVER_MODELS = ["gemma3:4b", "qwen3vl-it:4b", "some-llm:7b"]
@@ -107,6 +109,63 @@ class TestEmbeddingModelFilter(unittest.TestCase):
         task = _make_task(EmbeddingTask)
         for m in task.models:
             self.assertIn(m, EmbeddingTask.EMBED_MODELS)
+
+    def test_no_embed_models_on_server_falls_back_to_default(self):
+        """FLM does not advertise the embed model on /models (`flm serve -e 1`);
+        without any match (and no explicit filter) the suite defaults to the
+        standard embedding model so it still runs."""
+        task = _make_task(EmbeddingTask)
+        self.assertEqual(task.models, [EmbeddingTask.DEFAULT_EMBED_MODEL])
+
+
+class TestSuiteExclusivity(unittest.TestCase):
+    """The embedding suite must stay exclusive so a full model never loads."""
+
+    def _args(self, **overrides):
+        defaults = dict(llm=False, embedding=False, audio=False, vision=False, tools=False, all=False)
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_embedding_alone_runs_only_embedding(self):
+        suites, note = resolve_suites(self._args(embedding=True))
+        self.assertEqual(suites, {"llm": False, "embedding": True,
+                                  "audio": False, "vision": False, "tools": False})
+        self.assertEqual(note, "")
+
+    def test_embedding_plus_llm_runs_only_embedding(self):
+        suites, note = resolve_suites(self._args(embedding=True, llm=True))
+        self.assertEqual(suites, {"llm": False, "embedding": True,
+                                  "audio": False, "vision": False, "tools": False})
+        self.assertIn("mutually exclusive", note)
+
+    def test_embedding_plus_any_chat_suite_runs_only_embedding(self):
+        for suite in ("llm", "audio", "vision", "tools"):
+            with self.subTest(suite=suite):
+                kwargs = {"embedding": True, suite: True}
+                suites, _ = resolve_suites(self._args(**kwargs))
+                self.assertTrue(suites["embedding"])
+                for name in ("llm", "audio", "vision", "tools"):
+                    self.assertFalse(suites[name])
+
+    def test_all_excludes_embedding(self):
+        suites, note = resolve_suites(self._args(all=True))
+        self.assertEqual(suites["embedding"], False)
+        for name in ("llm", "audio", "vision", "tools"):
+            self.assertTrue(suites[name])
+        self.assertIn("--all excludes the embedding suite", note)
+
+    def test_all_plus_embedding_runs_only_embedding(self):
+        """--all --embedding is an explicit request for embedding alone."""
+        suites, note = resolve_suites(self._args(all=True, embedding=True))
+        self.assertEqual(suites["embedding"], True)
+        for name in ("llm", "audio", "vision", "tools"):
+            self.assertFalse(suites[name])
+        self.assertIn("mutually exclusive", note)
+
+    def test_no_suites_selected(self):
+        suites, note = resolve_suites(self._args())
+        self.assertFalse(any(suites.values()))
+        self.assertEqual(note, "")
 
 
 class TestArgParsing(unittest.TestCase):

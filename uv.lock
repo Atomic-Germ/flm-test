@@ -53,7 +53,7 @@ wheels = [
 
 [[package]]
 name = "flm-test"
-version = "0.3.1"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "annotated-types" },

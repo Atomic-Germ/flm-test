@@ -3,7 +3,6 @@ import csv
 import os
 import re
 import time
-import subprocess
 import json
 import urllib.request
 import urllib.error
@@ -96,13 +95,6 @@ class BaseTestTask(ABC):
             if delta.content:
                 output_content += delta.content
         return reasoning_content, output_content
-
-    def start_flm_server(self, audio, embed):
-        """Starts the flm server as a subprocess."""
-        print("Starting flm server...")
-        server_process = subprocess.Popen(["flm", "serve", "-a", str(audio), "-e", str(embed)])
-        time.sleep(5) # Allow server to boot
-        return server_process
 
     @abstractmethod
     def run(self, *args, **kwargs):
@@ -197,29 +189,264 @@ class LLMTask(BaseTestTask):
 
 
 class EmbeddingTask(BaseTestTask):
-    EMBED_MODELS = ["embed-gemma:300m"]
+    """
+    Tests OpenAI-compatible text embeddings across six automated checks:
+
+      E1 Response Structure      The response is a well-formed embeddings payload
+                                 with a non-empty numeric vector.
+      E2 Repeatability           The same input is drawn N times and the count of
+                                 inconsistent draws is reported, so a single
+                                 outlier draw cannot masquerade as a clean run
+                                 or as a build defect.
+      E3 Batch & Index Integrity A batched request returns one embedding per
+                                 input, in order, with unique indexes.
+      E4 Dimensionality          Every vector in a batch shares the same,
+                                 positive dimension.
+      E5 Semantic Ordering       Semantically-related pairs land closer together
+                                 in the embedding space than unrelated pairs.
+      E6 Cross-Path Consistency  The same weights reached via two delivery paths
+                                 (single-input and batched requests) in the same
+                                 run must agree, pinning any bad number on FLM
+                                 rather than on a single bad machine draw.
+
+    Like the tool-calling suite, each check produces a PASS / SOFT-FAIL / FAIL
+    verdict with a detail line, all written to CSV. Unlike the chat-based suites
+    there is no streaming mode, temperature or reasoning, and the server is
+    assumed to be running with only an embed model loaded (`flm serve -e 1`).
+    """
+
+    EMBED_MODELS = ["embed-gemma:300m", "embed-gemma"]
+    DEFAULT_EMBED_MODEL = "embed-gemma:300m"
+
+    SAMPLE_TEXT = "The embedding model should capture the meaning of this sentence."
+    BATCH_INPUTS = [
+        "Hello, world!",
+        "FastFlowLM is a local inference server.",
+        "The quick brown fox jumps over the lazy dog.",
+    ]
+    RELATED_PAIRS = [("cat", "kitten"), ("ocean", "sea")]
+    UNRELATED_PAIRS = [("cat", "car"), ("ocean", "desert")]
+
+    REPEAT_COUNT = 10
+    STABILITY_THRESHOLD = 0.999
+    AGREEMENT_THRESHOLD = 0.999
+    INCONSISTENT_PAIR_RATIO_FAIL = 0.25
+    CHECK_NAMES = [
+        "E1 Response Structure",
+        "E2 Repeatability",
+        "E3 Batch & Index Integrity",
+        "E4 Dimensionality",
+        "E5 Semantic Ordering",
+        "E6 Cross-Path Consistency",
+    ]
 
     def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
         super().__init__(base_url, backend_os, model_filter=model_filter)
         # Keep only recognised embedding models; honour any user-supplied filter.
         self.models = [m for m in self.models if m in self.EMBED_MODELS]
+        # FLM does not always advertise the embed model on /v1/models even when
+        # it is loaded (`flm serve -e 1`). Without an explicit --model filter,
+        # fall back to the standard embedding model so the suite still runs; if
+        # it is not actually loaded, each check fails gracefully with an ERROR
+        # row instead of silently skipping.
+        if not model_filter and not self.models:
+            self.models = [self.DEFAULT_EMBED_MODEL]
         self.csv_filename = self.get_csv_filename("embedding")
+
+    # -------------------------------------------------------------- helpers
+
+    def _embed_response(self, model_id: str, input_text: str | list[str]):
+        """One embeddings call; returns the raw response payload."""
+        return self.client.embeddings.create(model=model_id, input=input_text)
+
+    def _embed(self, model_id: str, input_text: str) -> list[float]:
+        """One embeddings call; returns the first vector."""
+        response = self._embed_response(model_id, input_text)
+        return response.data[0].embedding
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        """Cosine similarity between two vectors; 0.0 for degenerate inputs."""
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    @staticmethod
+    def _vector_preview(vector: list[float] | None, limit: int = 4) -> str:
+        """Compact CSV-friendly preview: first few values plus total length."""
+        if not vector:
+            return ""
+        head = ", ".join(f"{float(v):.6f}" for v in vector[:limit])
+        return f"[{head}, ...] ({len(vector)} dims)"
+
+    def _write_row(self, writer, model_id, check_name, input_text, verdict_detail, vector=None):
+        verdict, detail = verdict_detail if isinstance(verdict_detail, tuple) else (verdict_detail, "")
+        writer.writerow([model_id, check_name, input_text,
+                         len(vector) if vector else "N/A",
+                         self._vector_preview(vector),
+                         f"{verdict}: {detail}"])
+
+    def _run_check(self, writer, model_id, check_name, input_text, check):
+        """Runs a (verdict, detail, vector) producing closure with error handling."""
+        try:
+            result, vector = check()
+            verdict, detail = result if isinstance(result, tuple) else (result, "")
+            self._write_row(writer, model_id, check_name, input_text, result, vector)
+            print(f"  {check_name}: {verdict} ({detail})")
+        except Exception as e:
+            print(f"  {check_name}: ERROR ({e})")
+            self._write_row(writer, model_id, check_name, input_text, f"ERROR: {e}")
+        time.sleep(1)
+
+    # -------------------------------------------------------------- checks
+
+    @staticmethod
+    def _check_response_structure(response):
+        """E1: object types, non-empty data and a numeric vector."""
+        if getattr(response, "object", None) != "list":
+            return ("FAIL", f"expected response object 'list', got "
+                            f"'{getattr(response, 'object', None)!r}'"), None
+        data = getattr(response, "data", None)
+        if not data:
+            return ("FAIL", "no embedding data returned"), None
+        entry = data[0]
+        if getattr(entry, "object", None) != "embedding":
+            return ("FAIL", f"expected data object 'embedding', got "
+                            f"'{getattr(entry, 'object', None)!r}'"), None
+        vector = getattr(entry, "embedding", None)
+        if not isinstance(vector, list) or not vector:
+            return ("FAIL", "embedding vector is empty or missing"), None
+        if not all(isinstance(v, (int, float)) for v in vector):
+            return ("FAIL", "embedding vector contains non-numeric values"), None
+        return ("PASS", f"valid response with {len(vector)}-dim embedding"), vector
+
+    def _check_repeatability(self, model_id: str):
+        """E2: draw the same input N times and count inconsistent pairs.
+
+        A single draw can be an outlier on its own (a build can report either a
+        defect or a clean run from one pass), so the verdict is based on the
+        outlier *rate* across repeats rather than any single comparison.
+        """
+        draws = [self._embed(model_id, self.SAMPLE_TEXT) for _ in range(self.REPEAT_COUNT)]
+        total_pairs = self.REPEAT_COUNT * (self.REPEAT_COUNT - 1) // 2
+        bad_pairs = 0
+        worst = 1.0
+        for i in range(len(draws)):
+            for j in range(i + 1, len(draws)):
+                similarity = self._cosine_similarity(draws[i], draws[j])
+                worst = min(worst, similarity)
+                if similarity < self.STABILITY_THRESHOLD:
+                    bad_pairs += 1
+        ratio = bad_pairs / total_pairs if total_pairs else 0.0
+        if bad_pairs == 0:
+            return ("PASS", f"all {self.REPEAT_COUNT} draws consistent "
+                            f"(worst cosine {worst:.6f})"), draws[0]
+        if ratio >= self.INCONSISTENT_PAIR_RATIO_FAIL:
+            return ("FAIL", f"{bad_pairs}/{total_pairs} draw pairs inconsistent "
+                            f"(worst cosine {worst:.6f})"), draws[0]
+        return ("SOFT-FAIL", f"{bad_pairs}/{total_pairs} draw pairs inconsistent, "
+                             f"single-draw flicker (worst cosine {worst:.6f})"), draws[0]
+
+    def _check_batch_integrity(self, model_id: str):
+        """E3: N inputs yield N embeddings in order with unique indexes."""
+        response = self._embed_response(model_id, self.BATCH_INPUTS)
+        data = getattr(response, "data", None)
+        if not data:
+            return ("FAIL", "no embedding data returned for batch"), None
+        if len(data) != len(self.BATCH_INPUTS):
+            return ("FAIL", f"expected {len(self.BATCH_INPUTS)} embeddings, "
+                            f"got {len(data)}"), None
+        indexes = [getattr(d, "index", None) for d in data]
+        if indexes != list(range(len(data))):
+            return ("FAIL", f"unexpected data indexes {indexes}"), data[0].embedding
+        return ("PASS", f"{len(data)} embeddings returned in order"), data[0].embedding
+
+    def _check_dimensionality(self, model_id: str):
+        """E4: every vector in a batch shares the same positive dimension."""
+        response = self._embed_response(model_id, self.BATCH_INPUTS)
+        data = getattr(response, "data", None)
+        if not data:
+            return ("FAIL", "no embedding data returned for batch"), None
+        dims = {len(getattr(d, "embedding", []) or []) for d in data}
+        dim = next(iter(dims))
+        if len(dims) != 1 or dim <= 0:
+            return ("FAIL", f"inconsistent or invalid dimensions across batch: "
+                            f"{sorted(dims)}"), None
+        return ("PASS", f"consistent {dim}-dim embeddings across batch"), data[0].embedding
+
+    def _check_semantic_ordering(self, model_id: str):
+        """E5: related text pairs should sit closer than unrelated pairs."""
+        related = [
+            self._cosine_similarity(self._embed(model_id, a), self._embed(model_id, b))
+            for a, b in self.RELATED_PAIRS
+        ]
+        unrelated = [
+            self._cosine_similarity(self._embed(model_id, a), self._embed(model_id, b))
+            for a, b in self.UNRELATED_PAIRS
+        ]
+        mean_related = sum(related) / max(len(related), 1)
+        mean_unrelated = sum(unrelated) / max(len(unrelated), 1)
+        vector = self._embed(model_id, self.RELATED_PAIRS[0][0])
+        if mean_related > mean_unrelated:
+            return ("PASS", f"related avg {mean_related:.4f} > unrelated avg "
+                            f"{mean_unrelated:.4f}"), vector
+        return ("FAIL", f"related avg {mean_related:.4f} <= unrelated avg "
+                        f"{mean_unrelated:.4f}"), vector
+
+    def _check_cross_path_consistency(self, model_id: str):
+        """E6: same weights, two delivery paths in the same run must agree.
+
+        If a bad number can be reproduced through a different API path in the
+        same run it is a statement about FLM, not about a single bad hardware
+        draw.
+        """
+        single = self._embed(model_id, self.SAMPLE_TEXT)
+        batch = self._embed_response(model_id, [self.SAMPLE_TEXT])
+        data = getattr(batch, "data", None)
+        if not data:
+            return ("FAIL", "batch delivery path returned no data"), single
+        batch_vec = data[0].embedding
+        similarity = self._cosine_similarity(single, batch_vec)
+        if similarity >= self.AGREEMENT_THRESHOLD:
+            return ("PASS", f"single and batch delivery paths agree "
+                            f"(cosine {similarity:.6f})"), single
+        return ("FAIL", f"single and batch delivery paths disagree "
+                        f"(cosine {similarity:.6f})"), single
 
     def run(self):
         print("\n=== Starting Embedding Tests ===")
-        print("Testing the following Embedding models:")
-        for i, model in enumerate(self.models, 1):
-            print(f"  {i}. {model}")
+        print(f"Models found: {len(self.models)}")
+        if not self.models:
+            print("No embedding models found. Start the server with the embed model "
+                  "loaded, e.g. `flm serve -e 1`.")
+            print(f"Embedding tests complete. Saved to {self.csv_filename}")
+            return
 
-        server_process = self.start_flm_server(audio=0, embed=1)
-
-        # TODO: Implement OpenAI Embeddings API calls
-        # client.embeddings.create(input="text", model=model_id)
-
-        print("\nShutting down flm server...")
-        server_process.terminate()
-        server_process.wait()
-        print(f"Embedding tests complete. Saved to {self.csv_filename}")
+        with open(self.csv_filename, mode='w', newline='', encoding='utf-8') as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["Model", "Check", "Input", "Embedding Dim", "Vector Preview", "Check Result"])
+            for i, model_id in enumerate(self.models, 1):
+                print(f"\n--- Testing embedding model ({i}/{len(self.models)}): {model_id} ---")
+                self._run_check(writer, model_id, self.CHECK_NAMES[0], self.SAMPLE_TEXT,
+                                lambda: self._check_response_structure(
+                                    self._embed_response(model_id, self.SAMPLE_TEXT)))
+                self._run_check(writer, model_id, self.CHECK_NAMES[1], self.SAMPLE_TEXT,
+                                lambda: self._check_repeatability(model_id))
+                self._run_check(writer, model_id, self.CHECK_NAMES[2], json.dumps(self.BATCH_INPUTS),
+                                lambda: self._check_batch_integrity(model_id))
+                self._run_check(writer, model_id, self.CHECK_NAMES[3], json.dumps(self.BATCH_INPUTS),
+                                lambda: self._check_dimensionality(model_id))
+                self._run_check(writer, model_id, self.CHECK_NAMES[4], json.dumps(self.RELATED_PAIRS),
+                                lambda: self._check_semantic_ordering(model_id))
+                self._run_check(writer, model_id, self.CHECK_NAMES[5], self.SAMPLE_TEXT,
+                                lambda: self._check_cross_path_consistency(model_id))
+                print(f"Finished testing model: {model_id}")
+        print(f"\nEmbedding tests complete. Saved to {self.csv_filename}")
 
 class AudioTask(BaseTestTask):
     AUDIO_MODELS = ["whisper-v3:turbo"]

@@ -1,5 +1,5 @@
 """
-Unit tests for EmbeddingTask — embedding checks E1-E6. All embedding API calls
+Unit tests for EmbeddingTask — embedding checks E1-E7. All embedding API calls
 are mocked so no FLM server is required.
 
 Run with:
@@ -43,10 +43,10 @@ class TestCheckNames(unittest.TestCase):
     def setUp(self):
         self.task = _make_task()
 
-    def test_six_checks_defined(self):
-        self.assertEqual(len(self.task.CHECK_NAMES), 6)
+    def test_seven_checks_defined(self):
+        self.assertEqual(len(self.task.CHECK_NAMES), 7)
         for name in self.task.CHECK_NAMES:
-            self.assertIn(name[0], "E123456")
+            self.assertIn(name[0], "E1234567")
 
     def test_embed_allowlist_present(self):
         self.assertIn("embed-gemma:300m", EmbeddingTask.EMBED_MODELS)
@@ -198,6 +198,75 @@ class TestCrossPathConsistency(unittest.TestCase):
         self.assertEqual(verdict, "FAIL")
         self.assertIn("no data", detail)
         self.assertEqual(vec, [0.5, 0.5, 0.5])
+
+
+class TestBatchReferenceConsistency(unittest.TestCase):
+    """E7: per-draw cosine to the batch-path reference across a larger N."""
+
+    def setUp(self):
+        self.task = _make_task()
+
+    def test_all_draws_agree_pass(self):
+        with patch.object(self.task, "_embed", return_value=[0.5, 0.5, 0.5]), \
+             patch.object(self.task, "_embed_response",
+                          return_value=_embed_response([_embedding_entry([0.5, 0.5, 0.5])])):
+            (verdict, _), vec = self.task._check_batch_reference_consistency("embed-gemma:300m")
+        self.assertEqual(verdict, "PASS")
+        self.assertEqual(vec, [0.5, 0.5, 0.5])
+        self.assertEqual(len(self.task._reference_draws), self.task.REFERENCE_DRAW_COUNT)
+
+    def test_sparse_outlier_soft_fails(self):
+        n = self.task.REFERENCE_DRAW_COUNT
+        draws = [[1.0, 0.0, 0.0]] + [[0.5, 0.5, 0.5]] * (n - 1)
+
+        def side_effect(_m, _t):
+            return list(draws.pop(0))
+
+        with patch.object(self.task, "_embed", side_effect=side_effect), \
+             patch.object(self.task, "_embed_response",
+                          return_value=_embed_response([_embedding_entry([0.5, 0.5, 0.5])])):
+            (verdict, detail), _ = self.task._check_batch_reference_consistency("embed-gemma:300m")
+        self.assertEqual(verdict, "SOFT-FAIL")
+        self.assertIn("1/30", detail)
+
+    def test_majority_outliers_fail(self):
+        n = self.task.REFERENCE_DRAW_COUNT
+        draws = [[1.0, 0.0, 0.0]] * 8 + [[0.5, 0.5, 0.5]] * (n - 8)
+
+        def side_effect(_m, _t):
+            return list(draws.pop(0))
+
+        with patch.object(self.task, "_embed", side_effect=side_effect), \
+             patch.object(self.task, "_embed_response",
+                          return_value=_embed_response([_embedding_entry([0.5, 0.5, 0.5])])):
+            (verdict, detail), _ = self.task._check_batch_reference_consistency("embed-gemma:300m")
+        self.assertEqual(verdict, "FAIL")
+        self.assertIn("8/30", detail)
+
+    def test_unavailable_reference_fails(self):
+        with patch.object(self.task, "_embed", return_value=[0.5, 0.5, 0.5]), \
+             patch.object(self.task, "_embed_response", return_value=_embed_response([])):
+            (verdict, detail), _ = self.task._check_batch_reference_consistency("embed-gemma:300m")
+        self.assertEqual(verdict, "FAIL")
+        self.assertIn("reference", detail)
+
+    def test_draw_rows_dump_full_raw_vectors(self):
+        with patch.object(self.task, "_embed", return_value=[0.5, 0.5, 0.5]), \
+             patch.object(self.task, "_embed_response",
+                          return_value=_embed_response([_embedding_entry([0.5, 0.5, 0.5])])):
+            self.task._check_batch_reference_consistency("embed-gemma:300m")
+        rows = self.task._reference_draw_rows("embed-gemma:300m",
+                                              "E7 Batch Reference Consistency")
+        self.assertEqual(len(rows), self.task.REFERENCE_DRAW_COUNT)
+        first = rows[0]
+        self.assertEqual(first[1], "E7 Batch Reference Consistency (draw 1/30)")
+        self.assertEqual(first[3], 3)
+        self.assertEqual(json.loads(first[4]), [0.5, 0.5, 0.5])
+        self.assertIn("cosine vs batch reference: 1.000000", first[5])
+
+    def test_draw_rows_empty_before_any_check(self):
+        rows = self.task._reference_draw_rows("embed-gemma:300m", "E7 Batch Reference Consistency")
+        self.assertEqual(rows, [])
 
 
 class TestBatchIntegrity(unittest.TestCase):

@@ -203,6 +203,7 @@ Tests text embedding models through the OpenAI-compatible `embeddings.create` AP
 - Dimensionality: every vector in a batch shares the same, positive dimension
 - Semantic quality: related text pairs land closer together in the embedding space than unrelated pairs
 - Cross-path consistency: the same input through the single-input and batch delivery paths in the same run
+- Batch-reference stability: a larger sample of draws compared per-draw against the batch reference, so intermittent outliers surface even when a small sample misses them; the raw draw vectors are dumped to the CSV for cross-build comparison
 
 **Automated Checks:**
 | Check | Verdict | Description |
@@ -213,6 +214,9 @@ Tests text embedding models through the OpenAI-compatible `embeddings.create` AP
 | E4 Dimensionality | PASS / FAIL | All batch embeddings share the same consistent dimension |
 | E5 Semantic Ordering | PASS / FAIL | Mean similarity of related pairs (`cat`/`kitten`, `ocean`/`sea`) exceeds that of unrelated pairs (`cat`/`car`, `ocean`/`desert`) |
 | E6 Cross-Path Consistency | PASS / FAIL | The same weights reached via a single-input request and a one-item batch request agree (cosine ≥ 0.999), distinguishing a bad number from a bad machine |
+| E7 Batch Reference Consistency | PASS / SOFT-FAIL / FAIL | `SAMPLE_TEXT` drawn 30×, each draw compared to the batch-path reference in the same run; PASS when all agree, SOFT-FAIL on sparse flicker (≤ 25% deviating), FAIL when the outlier rate is a property of the build |
+
+For E7 the CSV also carries one row per draw (`E7 … (draw N/30)`) with the **full raw 768-dim vector** in the Vector Preview column and its cosine to the batch reference, so embeddings can be diffed directly across builds. Only E7's rows carry full vectors; other checks keep the compact preview.
 
 Because this suite is exclusive, only an embedding model is loaded on the server (`flm serve -e 1`) — no full model is required.
 
@@ -294,7 +298,7 @@ results/{timestamp}/{backend_os}/{test_type}_results_v{flm_version}.csv
 | Column | Description |
 |--------|-------------|
 | Model | Embedding model ID |
-| Check | E1–E6 check name |
+| Check | E1–E7 check name |
 | Input | The text (or batch/JSON of texts) embedded |
 | Embedding Dim | Vector dimensionality (or N/A on error) |
 | Vector Preview | First few values plus total length |

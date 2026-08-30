@@ -190,7 +190,7 @@ class LLMTask(BaseTestTask):
 
 class EmbeddingTask(BaseTestTask):
     """
-    Tests OpenAI-compatible text embeddings across six automated checks:
+    Tests OpenAI-compatible text embeddings across seven automated checks:
 
       E1 Response Structure      The response is a well-formed embeddings payload
                                  with a non-empty numeric vector.
@@ -208,6 +208,11 @@ class EmbeddingTask(BaseTestTask):
                                  (single-input and batched requests) in the same
                                  run must agree, pinning any bad number on FLM
                                  rather than on a single bad machine draw.
+      E7 Batch Reference
+      Consistency                A larger set of draws of the same input is
+                                 compared against the batch-path reference in
+                                 the same run, exposing the outlier rate and
+                                 magnitude that a small sample can miss.
 
     Like the tool-calling suite, each check produces a PASS / SOFT-FAIL / FAIL
     verdict with a detail line, all written to CSV. Unlike the chat-based suites
@@ -231,6 +236,7 @@ class EmbeddingTask(BaseTestTask):
     STABILITY_THRESHOLD = 0.999
     AGREEMENT_THRESHOLD = 0.999
     INCONSISTENT_PAIR_RATIO_FAIL = 0.25
+    REFERENCE_DRAW_COUNT = 30
     CHECK_NAMES = [
         "E1 Response Structure",
         "E2 Repeatability",
@@ -238,6 +244,7 @@ class EmbeddingTask(BaseTestTask):
         "E4 Dimensionality",
         "E5 Semantic Ordering",
         "E6 Cross-Path Consistency",
+        "E7 Batch Reference Consistency",
     ]
 
     def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
@@ -252,6 +259,8 @@ class EmbeddingTask(BaseTestTask):
         if not model_filter and not self.models:
             self.models = [self.DEFAULT_EMBED_MODEL]
         self.csv_filename = self.get_csv_filename("embedding")
+        # (draw, cosine-to-reference) records produced by E7 and dumped to CSV.
+        self._reference_draws: list[tuple[list[float], float]] = []
 
     # -------------------------------------------------------------- helpers
 
@@ -418,6 +427,58 @@ class EmbeddingTask(BaseTestTask):
         return ("FAIL", f"single and batch delivery paths disagree "
                         f"(cosine {similarity:.6f})"), single
 
+    def _check_batch_reference_consistency(self, model_id: str):
+        """E7: per-draw cosine to the batch-path reference across a larger N.
+
+        A 10-draw all-pairs sample can still hide the shape of an instability.
+        E7 draws the input REFERENCE_DRAW_COUNT times and compares every draw
+        to the batch-path embedding of the same text, so the outlier rate and
+        magnitude surface per-draw. Each (draw, cosine) record is kept in
+        self._reference_draws so `run()` can dump the raw vectors to the CSV
+        for comparison across builds.
+        """
+        batch = self._embed_response(model_id, [self.SAMPLE_TEXT])
+        data = getattr(batch, "data", None)
+        if not data:
+            return ("FAIL", "batch-path reference returned no data"), None
+        reference = data[0].embedding
+        draws = [self._embed(model_id, self.SAMPLE_TEXT)
+                 for _ in range(self.REFERENCE_DRAW_COUNT)]
+        self._reference_draws = [
+            (draw, self._cosine_similarity(draw, reference)) for draw in draws
+        ]
+        outliers = [c for _, c in self._reference_draws if c < self.STABILITY_THRESHOLD]
+        ratio = len(outliers) / len(self._reference_draws)
+        worst = min((c for _, c in self._reference_draws), default=1.0)
+        if not outliers:
+            verdict = ("PASS", f"all {len(draws)} draws agree with the batch "
+                               f"reference (worst cosine {worst:.6f})")
+        elif ratio >= self.INCONSISTENT_PAIR_RATIO_FAIL:
+            verdict = ("FAIL", f"{len(outliers)}/{len(draws)} draws deviate from "
+                               f"the batch reference (worst cosine {worst:.6f})")
+        else:
+            verdict = ("SOFT-FAIL", f"{len(outliers)}/{len(draws)} draws deviate "
+                                    f"from the batch reference, single-draw flicker "
+                                    f"(worst cosine {worst:.6f})")
+        return verdict, reference
+
+    def _reference_draw_rows(self, model_id: str, check_name: str):
+        """One CSV row per E7 draw, carrying the full raw vector for diffing."""
+        rows = []
+        total = len(self._reference_draws)
+        for idx, (vector, cosine) in enumerate(self._reference_draws, 1):
+            dims = len(vector) if vector else 0
+            full = json.dumps(vector)
+            rows.append([
+                model_id,
+                f"{check_name} (draw {idx}/{total})",
+                self.SAMPLE_TEXT,
+                dims,
+                full,
+                f"cosine vs batch reference: {cosine:.6f}",
+            ])
+        return rows
+
     def run(self):
         print("\n=== Starting Embedding Tests ===")
         print(f"Models found: {len(self.models)}")
@@ -445,6 +506,10 @@ class EmbeddingTask(BaseTestTask):
                                 lambda: self._check_semantic_ordering(model_id))
                 self._run_check(writer, model_id, self.CHECK_NAMES[5], self.SAMPLE_TEXT,
                                 lambda: self._check_cross_path_consistency(model_id))
+                self._run_check(writer, model_id, self.CHECK_NAMES[6], self.SAMPLE_TEXT,
+                                lambda: self._check_batch_reference_consistency(model_id))
+                for row in self._reference_draw_rows(model_id, self.CHECK_NAMES[6]):
+                    writer.writerow(row)
                 print(f"Finished testing model: {model_id}")
         print(f"\nEmbedding tests complete. Saved to {self.csv_filename}")
 

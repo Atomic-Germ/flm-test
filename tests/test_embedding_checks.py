@@ -43,10 +43,10 @@ class TestCheckNames(unittest.TestCase):
     def setUp(self):
         self.task = _make_task()
 
-    def test_seven_checks_defined(self):
-        self.assertEqual(len(self.task.CHECK_NAMES), 7)
+    def test_eight_checks_defined(self):
+        self.assertEqual(len(self.task.CHECK_NAMES), 8)
         for name in self.task.CHECK_NAMES:
-            self.assertIn(name[0], "E1234567")
+            self.assertIn(name[0], "E12345678")
 
     def test_embed_allowlist_present(self):
         self.assertIn("embed-gemma:300m", EmbeddingTask.EMBED_MODELS)

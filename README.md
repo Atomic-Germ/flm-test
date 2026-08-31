@@ -204,6 +204,7 @@ Tests text embedding models through the OpenAI-compatible `embeddings.create` AP
 - Semantic quality: related text pairs land closer together in the embedding space than unrelated pairs
 - Cross-path consistency: the same input through the single-input and batch delivery paths in the same run
 - Batch-reference stability: a larger sample of draws compared per-draw against the batch reference, so intermittent outliers surface even when a small sample misses them; the raw draw vectors are dumped to the CSV for cross-build comparison
+- Reference agreement: embeddings matched against bundled oracle vectors from the validated numpy implementation of the official model (E8)
 
 **Automated Checks:**
 | Check | Verdict | Description |
@@ -215,8 +216,9 @@ Tests text embedding models through the OpenAI-compatible `embeddings.create` AP
 | E5 Semantic Ordering | PASS / FAIL | Mean similarity of related pairs (`cat`/`kitten`, `ocean`/`sea`) exceeds that of unrelated pairs (`cat`/`car`, `ocean`/`desert`) |
 | E6 Cross-Path Consistency | PASS / FAIL | The same weights reached via a single-input request and a one-item batch request agree (cosine ≥ 0.999), distinguishing a bad number from a bad machine |
 | E7 Batch Reference Consistency | PASS / SOFT-FAIL / FAIL | `SAMPLE_TEXT` drawn 30×, each draw compared to the batch-path reference in the same run; PASS when all agree, SOFT-FAIL on sparse flicker (≤ 25% deviating), FAIL when the outlier rate is a property of the build |
+| E8 Reference Agreement | PASS / FAIL | A corpus of 8 texts is compared against bundled reference vectors from the validated numpy implementation of the official google/embeddinggemma-300m pipeline (worst cosine ≥ 0.999), pinning the API path to a known-good implementation |
 
-For E7 the CSV also carries one row per draw (`E7 … (draw N/30)`) with the **full raw 768-dim vector** in the Vector Preview column and its cosine to the batch reference, so embeddings can be diffed directly across builds. Only E7's rows carry full vectors; other checks keep the compact preview.
+For E7 the CSV also carries one row per draw (`E7 … (draw N/30)`) with the **full raw 768-dim vector** in the Vector Preview column and its cosine to the batch reference, so embeddings can be diffed directly across builds. Only E7's rows carry full vectors; other checks keep the compact preview. E8's reference vectors ship with the package in `flm_test/test_files/embedding_reference.json`.
 
 Because this suite is exclusive, only an embedding model is loaded on the server (`flm serve -e 1`) — no full model is required.
 

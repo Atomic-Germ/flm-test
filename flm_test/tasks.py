@@ -208,11 +208,15 @@ class EmbeddingTask(BaseTestTask):
                                  (single-input and batched requests) in the same
                                  run must agree, pinning any bad number on FLM
                                  rather than on a single bad machine draw.
-      E7 Batch Reference
-      Consistency                A larger set of draws of the same input is
-                                 compared against the batch-path reference in
-                                 the same run, exposing the outlier rate and
-                                 magnitude that a small sample can miss.
+E7 Batch Reference
+       Consistency                A larger set of draws of the same input is
+                                  compared against the batch-path reference in
+                                  the same run, exposing the outlier rate and
+                                  magnitude that a small sample can miss.
+       E8 Reference Agreement     Embeddings match the bundled reference vectors
+                                  produced by the validated numpy pipeline for
+                                  google/embeddinggemma-300m, pinning the API
+                                  path to a known-good implementation.
 
     Like the tool-calling suite, each check produces a PASS / SOFT-FAIL / FAIL
     verdict with a detail line, all written to CSV. Unlike the chat-based suites
@@ -237,6 +241,8 @@ class EmbeddingTask(BaseTestTask):
     AGREEMENT_THRESHOLD = 0.999
     INCONSISTENT_PAIR_RATIO_FAIL = 0.25
     REFERENCE_DRAW_COUNT = 30
+    REFERENCE_AGREEMENT_THRESHOLD = 0.999
+    REFERENCE_FILE = PACKAGE_DIR / "test_files" / "embedding_reference.json"
     CHECK_NAMES = [
         "E1 Response Structure",
         "E2 Repeatability",
@@ -245,6 +251,7 @@ class EmbeddingTask(BaseTestTask):
         "E5 Semantic Ordering",
         "E6 Cross-Path Consistency",
         "E7 Batch Reference Consistency",
+        "E8 Reference Agreement",
     ]
 
     def __init__(self, base_url, backend_os="linux", model_filter: list[str] | None = None):
@@ -261,6 +268,11 @@ class EmbeddingTask(BaseTestTask):
         self.csv_filename = self.get_csv_filename("embedding")
         # (draw, cosine-to-reference) records produced by E7 and dumped to CSV.
         self._reference_draws: list[tuple[list[float], float]] = []
+        # Bundled reference vectors from the validated numpy oracle (E8).
+        reference = json.loads(self.REFERENCE_FILE.read_text(encoding="utf-8"))
+        self._reference_entries = [
+            (entry["text"], entry["embedding"]) for entry in reference["entries"].values()
+        ]
 
     # -------------------------------------------------------------- helpers
 
@@ -455,12 +467,34 @@ class EmbeddingTask(BaseTestTask):
                                f"reference (worst cosine {worst:.6f})")
         elif ratio >= self.INCONSISTENT_PAIR_RATIO_FAIL:
             verdict = ("FAIL", f"{len(outliers)}/{len(draws)} draws deviate from "
-                               f"the batch reference (worst cosine {worst:.6f})")
+                                f"the batch reference (worst cosine {worst:.6f})")
         else:
             verdict = ("SOFT-FAIL", f"{len(outliers)}/{len(draws)} draws deviate "
                                     f"from the batch reference, single-draw flicker "
                                     f"(worst cosine {worst:.6f})")
         return verdict, reference
+
+    def _check_reference_agreement(self, model_id: str):
+        """E8: compare live embeddings against the bundled oracle vectors.
+
+        The reference is the output of the validated numpy implementation of
+        the official google/embeddinggemma-300m pipeline, so agreement pins the
+        whole API path (prefix, tokenizer, forward pass, pooling, projection,
+        normalisation) to a known-good implementation rather than to another
+        build of itself.
+        """
+        worst = 1.0
+        worst_text = ""
+        for text, expected in self._reference_entries:
+            similarity = self._cosine_similarity(self._embed(model_id, text), expected)
+            if similarity < worst:
+                worst, worst_text = similarity, text
+        if worst >= self.REFERENCE_AGREEMENT_THRESHOLD:
+            first = self._embed(model_id, self._reference_entries[0][0])
+            return ("PASS", f"all {len(self._reference_entries)} texts agree with the "
+                            f"oracle reference (worst cosine {worst:.6f})"), first
+        return ("FAIL", f"'{worst_text}' deviates from the oracle reference "
+                        f"(cosine {worst:.6f})"), self._embed(model_id, worst_text)
 
     def _reference_draw_rows(self, model_id: str, check_name: str):
         """One CSV row per E7 draw, carrying the full raw vector for diffing."""
@@ -510,6 +544,9 @@ class EmbeddingTask(BaseTestTask):
                                 lambda: self._check_batch_reference_consistency(model_id))
                 for row in self._reference_draw_rows(model_id, self.CHECK_NAMES[6]):
                     writer.writerow(row)
+                self._run_check(writer, model_id, self.CHECK_NAMES[7],
+                                "bundle: oracle reference texts",
+                                lambda: self._check_reference_agreement(model_id))
                 print(f"Finished testing model: {model_id}")
         print(f"\nEmbedding tests complete. Saved to {self.csv_filename}")
 

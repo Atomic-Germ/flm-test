@@ -7,7 +7,7 @@ A comprehensive testing framework *intended* for  **[FastFlowLM (FLM)](https://f
 flm-test is designed to thoroughly test FastFlowLM's API compatibility and model functionality across multiple modalities:
 
 - **LLM Tests**: Language model inference with both streaming and non-streaming modes
-- **Embedding Tests**: Text embedding model validation
+- **Embedding Tests**: Text embedding validation (structure, determinism, batching, dimensionality, semantic ordering) with automated check verdicts. Runs exclusively on a server loaded with only an embed model (`flm serve -e 1`).
 - **Audio Tests**: Audio understanding via chat completions, with a bundled music clip
 - **Vision Tests**: Vision-Language Model (VLM) tests with multi-image support and automated response checking
 - **Tool Calling Tests**: Function/tool-calling across five escalating complexity levels, in streaming and non-streaming modes
@@ -65,7 +65,7 @@ flm serve -e 1
 Run tests with:
 
 ```bash
-# Run all tests
+# Run all tests (embedding suite excluded — see below)
 flm-test --all
 
 # Run specific tests
@@ -85,6 +85,18 @@ flm-test --llm --port 56354       # Set a custom port for LFM
 flm-test --llm --gen-lim 32       # Limit LLM output to 32 tokens
 flm-test --vision --temp 0.7      # Set sampling temperature (all chat-based tests; defaults to 0.3, a common tool-calling setting)
 flm-test --tools --reasoning high # Set reasoning effort for all chat-based tests
+```
+
+### Embedding Test Exclusivity
+
+The embedding suite is **mutually exclusive** with every other suite. It assumes the FLM server was started with *only* an embed model loaded (`flm serve -e 1`), so it must never run alongside the chat-based suites — otherwise a full model would have to be loaded just to run embeddings.
+
+`--all` runs `--llm --audio --vision --tools` and intentionally excludes the embedding suite. Passing `--embedding` together with any other suite (or with `--all`) runs only the embedding suite, with a warning:
+
+```bash
+flm-test --all                      # all suites EXCEPT embedding
+flm-test --embedding                # embeddings only
+flm-test --llm --embedding          # embeddings only (mutually exclusive warning)
 ```
 
 ### Reasoning Control
@@ -181,6 +193,37 @@ By default, audio tests run against known audio models (currently `whisper-v3:tu
 
 **Output:** `audio_results_v{version}_{timestamp}.csv`
 
+### Embedding Tests
+Tests text embedding models through the OpenAI-compatible `embeddings.create` API, with the same automated PASS/SOFT-FAIL/FAIL verdicts used by the other suites.
+
+**What it tests:**
+- Well-formed OpenAI embedding responses (object types, non-empty numeric vectors)
+- Repeatability: the same input is drawn repeatedly and the count of inconsistent draws is reported, so a single outlier draw cannot flip a build from clean to defective (or back)
+- Batch requests: as many embeddings as inputs, returned in order with unique indexes
+- Dimensionality: every vector in a batch shares the same, positive dimension
+- Semantic quality: related text pairs land closer together in the embedding space than unrelated pairs
+- Cross-path consistency: the same input through the single-input and batch delivery paths in the same run
+- Batch-reference stability: a larger sample of draws compared per-draw against the batch reference, so intermittent outliers surface even when a small sample misses them; the raw draw vectors are dumped to the CSV for cross-build comparison
+- Reference agreement: embeddings matched against bundled oracle vectors from the validated numpy implementation of the official model (E8)
+
+**Automated Checks:**
+| Check | Verdict | Description |
+|-------|---------|-------------|
+| E1 Response Structure | PASS / FAIL | Response is a valid `list` payload containing an `embedding` object with a non-empty numeric vector |
+| E2 Repeatability | PASS / SOFT-FAIL / FAIL | `SAMPLE_TEXT` drawn 10×; PASS when every pairwise cosine ≥ 0.999, SOFT-FAIL on a single-device flicker (≤ 25% of draw pairs inconsistent), FAIL when the outlier rate is a property of the build |
+| E3 Batch & Index Integrity | PASS / FAIL | N inputs return exactly N embeddings in order with unique indexes |
+| E4 Dimensionality | PASS / FAIL | All batch embeddings share the same consistent dimension |
+| E5 Semantic Ordering | PASS / FAIL | Mean similarity of related pairs (`cat`/`kitten`, `ocean`/`sea`) exceeds that of unrelated pairs (`cat`/`car`, `ocean`/`desert`) |
+| E6 Cross-Path Consistency | PASS / FAIL | The same weights reached via a single-input request and a one-item batch request agree (cosine ≥ 0.999), distinguishing a bad number from a bad machine |
+| E7 Batch Reference Consistency | PASS / SOFT-FAIL / FAIL | `SAMPLE_TEXT` drawn 30×, each draw compared to the batch-path reference in the same run; PASS when all agree, SOFT-FAIL on sparse flicker (≤ 25% deviating), FAIL when the outlier rate is a property of the build |
+| E8 Reference Agreement | PASS / FAIL | A corpus of 8 texts is compared against bundled reference vectors from the validated numpy implementation of the official google/embeddinggemma-300m pipeline (worst cosine ≥ 0.999), pinning the API path to a known-good implementation |
+
+For E7 the CSV also carries one row per draw (`E7 … (draw N/30)`) with the **full raw 768-dim vector** in the Vector Preview column and its cosine to the batch reference, so embeddings can be diffed directly across builds. Only E7's rows carry full vectors; other checks keep the compact preview. E8's reference vectors ship with the package in `flm_test/test_files/embedding_reference.json`.
+
+Because this suite is exclusive, only an embedding model is loaded on the server (`flm serve -e 1`) — no full model is required.
+
+**Output:** `embedding_results_v{version}_{timestamp}.csv`
+
 ### Tool Calling Tests
 Tests OpenAI-compatible function/tool-calling across five escalating complexity levels. Each level runs in both **non-streaming** and **streaming** mode.
 
@@ -252,6 +295,16 @@ results/{timestamp}/{backend_os}/{test_type}_results_v{flm_version}.csv
 | Reasoning Content | Internal reasoning (if available) |
 | Output Content | Model's response |
 | Music Mention Check | PASS / SOFT-FAIL / ERROR |
+
+**Embedding Results:**
+| Column | Description |
+|--------|-------------|
+| Model | Embedding model ID |
+| Check | E1–E7 check name |
+| Input | The text (or batch/JSON of texts) embedded |
+| Embedding Dim | Vector dimensionality (or N/A on error) |
+| Vector Preview | First few values plus total length |
+| Check Result | Verdict with detail, e.g. "PASS: related avg 0.8241 > unrelated avg 0.1103" |
 
 **Tools Results:**
 | Column | Description |

@@ -7,6 +7,39 @@ from pathlib import Path
 from .tasks import LLMTask, EmbeddingTask, AudioTask, VisionTask, ToolCallingTask
 from typing import Any
 
+SUITE_NAMES = ("llm", "embedding", "audio", "vision", "tools")
+
+
+def resolve_suites(args):
+    """Decide which test suites must run.
+
+    Rules:
+      * ``--all`` enables every suite except embedding, which stays exclusive.
+      * Embedding is mutually exclusive with the chat-based suites: requesting
+        it alongside any of them (or with ``--all``) runs only the embedding
+        suite, because those tests assume a server started with only an embed
+        model loaded (``flm serve -e 1``) and must not require a full model.
+
+    Returns ``(suites, note)`` where ``suites`` maps suite name -> bool and
+    ``note`` is an (possibly empty) informational message for the user.
+    """
+    explicit = {name: getattr(args, name) for name in SUITE_NAMES}
+    note = ""
+    if args.all:
+        suites = {name: name != "embedding" for name in SUITE_NAMES}
+        note = ("Note: --all excludes the embedding suite; run `flm-test --embedding` "
+                "separately so only an embed model needs to be loaded.")
+    else:
+        suites = dict(explicit)
+
+    # An explicit --embedding request wins over --all or any chat-based suite:
+    # the embedding tests must never share a run with suites needing a full model.
+    if explicit["embedding"] and (args.all or any(explicit[name] for name in ("llm", "audio", "vision", "tools"))):
+        suites = {name: name == "embedding" for name in SUITE_NAMES}
+        note = ("--embedding is mutually exclusive with "
+                "--llm/--audio/--vision/--tools; running only the embedding tests.")
+    return suites, note
+
 
 def main():
     parser = argparse.ArgumentParser(description="Test runner for FLM models.")
@@ -16,7 +49,8 @@ def main():
     parser.add_argument('--vision', action='store_true', help="Run vision tests")
     parser.add_argument('--tools', action='store_true',
                         help="Run tool-calling tests (five complexity levels)")
-    parser.add_argument('--all', action='store_true', help="Run all available tests")
+    parser.add_argument('--all', action='store_true',
+                        help="Run all suites except embedding (which stays exclusive)")
     parser.add_argument('--gen-lim', type=int, default=-1, help="Maximum number of tokens to generate")
     parser.add_argument('--temp', '--temperature', type=float, default=0.3, metavar='TEMP',
                         help="Sampling temperature for chat-based tests (e.g. 0.7). "
@@ -34,10 +68,12 @@ def main():
 
     args = parser.parse_args()
 
-    if args.all:
-        args.llm = args.embedding = args.audio = args.vision = args.tools = True
+    suites, note = resolve_suites(args)
 
-    if not any([args.llm, args.embedding, args.audio, args.vision, args.tools]):
+    if note:
+        print(note + "\n")
+
+    if not any(suites.values()):
         parser.print_help()
         return
 
@@ -51,19 +87,19 @@ def main():
 
         model_filter = args.model  # list[str] | None
 
-        if args.llm:
+        if suites["llm"]:
             LLMTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim, temperature=args.temp, reasoning=args.reasoning)
 
-        if args.embedding:
+        if suites["embedding"]:
             EmbeddingTask(baseurl, args.backend_os, model_filter=model_filter).run()
 
-        if args.audio:
+        if suites["audio"]:
             AudioTask(baseurl, args.backend_os, model_filter=model_filter).run(temperature=args.temp, reasoning=args.reasoning)
 
-        if args.vision:
+        if suites["vision"]:
             VisionTask(baseurl, args.backend_os, model_filter=model_filter).run(max_generation_tokens=args.gen_lim, temperature=args.temp, reasoning=args.reasoning)
 
-        if args.tools:
+        if suites["tools"]:
             ToolCallingTask(baseurl, args.backend_os, model_filter=model_filter).run(max_completion_tokens=args.gen_lim, temperature=args.temp, reasoning=args.reasoning)
 
     except Exception as e:

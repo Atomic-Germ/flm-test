@@ -200,6 +200,20 @@ class TestCrossPathConsistency(unittest.TestCase):
         self.assertEqual(vec, [0.5, 0.5, 0.5])
 
 
+    def test_single_flickering_pair_soft_fails(self):
+        """One bad pair in ten is flicker, not a clean path -- and the old
+        single-draw E6 reported PASS with cosine 1.000000 for exactly this."""
+        good = _embed_response([_embedding_entry([0.5, 0.5, 0.5])])
+        bad = _embed_response([_embedding_entry([1.0, 0.0, 0.0])])
+        responses = [good] * (EmbeddingTask.CROSS_PATH_DRAW_COUNT - 1) + [bad]
+        with patch.object(self.task, "_embed", return_value=[0.5, 0.5, 0.5]), \
+             patch.object(self.task, "_embed_response", side_effect=responses):
+            (verdict, detail), _ = self.task._check_cross_path_consistency(
+                "embed-gemma:300m")
+        self.assertEqual(verdict, "SOFT-FAIL")
+        self.assertIn("flicker", detail)
+
+
 class TestBatchReferenceConsistency(unittest.TestCase):
     """E7: per-draw cosine to the batch-path reference across a larger N."""
 

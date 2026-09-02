@@ -241,6 +241,7 @@ E7 Batch Reference
     AGREEMENT_THRESHOLD = 0.999
     INCONSISTENT_PAIR_RATIO_FAIL = 0.25
     REFERENCE_DRAW_COUNT = 30
+    CROSS_PATH_DRAW_COUNT = 10
     REFERENCE_AGREEMENT_THRESHOLD = 0.999
     REFERENCE_FILE = PACKAGE_DIR / "test_files" / "embedding_reference.json"
     CHECK_NAMES = [
@@ -425,19 +426,38 @@ E7 Batch Reference
         If a bad number can be reproduced through a different API path in the
         same run it is a statement about FLM, not about a single bad hardware
         draw.
+
+        Drawn CROSS_PATH_DRAW_COUNT times for the same reason E7 is. One
+        single-versus-batch pair only agrees when *both* halves land well, so
+        on a path where a draw is good p of the time the pair passes at roughly
+        p squared -- and when it passes it reports `cosine 1.000000`, which
+        reads like a strong result rather than one sample. E7 already shows
+        what that costs: a run with 16 of 30 draws at exactly 1.0 can still
+        produce a clean E6.
         """
-        single = self._embed(model_id, self.SAMPLE_TEXT)
-        batch = self._embed_response(model_id, [self.SAMPLE_TEXT])
-        data = getattr(batch, "data", None)
-        if not data:
-            return ("FAIL", "batch delivery path returned no data"), single
-        batch_vec = data[0].embedding
-        similarity = self._cosine_similarity(single, batch_vec)
-        if similarity >= self.AGREEMENT_THRESHOLD:
-            return ("PASS", f"single and batch delivery paths agree "
-                            f"(cosine {similarity:.6f})"), single
-        return ("FAIL", f"single and batch delivery paths disagree "
-                        f"(cosine {similarity:.6f})"), single
+        pairs = []
+        for _ in range(self.CROSS_PATH_DRAW_COUNT):
+            single = self._embed(model_id, self.SAMPLE_TEXT)
+            batch = self._embed_response(model_id, [self.SAMPLE_TEXT])
+            data = getattr(batch, "data", None)
+            if not data:
+                return ("FAIL", "batch delivery path returned no data"), single
+            pairs.append(
+                (single, self._cosine_similarity(single, data[0].embedding))
+            )
+        first = pairs[0][0]
+        outliers = [c for _, c in pairs if c < self.AGREEMENT_THRESHOLD]
+        worst = min(c for _, c in pairs)
+        if not outliers:
+            return ("PASS", f"all {len(pairs)} single/batch pairs agree "
+                            f"(worst cosine {worst:.6f})"), first
+        ratio = len(outliers) / len(pairs)
+        if ratio >= self.INCONSISTENT_PAIR_RATIO_FAIL:
+            return ("FAIL", f"{len(outliers)}/{len(pairs)} single/batch pairs "
+                            f"disagree (worst cosine {worst:.6f})"), first
+        return ("SOFT-FAIL", f"{len(outliers)}/{len(pairs)} single/batch pairs "
+                             f"disagree, single-draw flicker "
+                             f"(worst cosine {worst:.6f})"), first
 
     def _check_batch_reference_consistency(self, model_id: str):
         """E7: per-draw cosine to the batch-path reference across a larger N.
